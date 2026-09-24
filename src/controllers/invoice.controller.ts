@@ -43,6 +43,7 @@ export interface GetInvoicesRequest extends AuthenticatedRequest {
     page?: string;
     limit?: string;
     status?: string;
+    cursor?: string;
   };
 }
 
