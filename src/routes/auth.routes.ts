@@ -10,19 +10,16 @@ import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { validateBody } from "../middleware/validate.middleware";
-import {
-  createChallengeRateLimitMiddleware,
-  createVerifyRateLimitMiddleware,
-} from "../middleware/rate-limit.middleware";
+import { createAuthRateLimiter } from "../middleware/redis-rate-limit.middleware";
 import { createCircuitBreaker } from "../lib/circuit-breaker";
 import type { AuthService } from "../services/auth.service";
 import type { AppLogger } from "../observability/logger";
 import { HttpError } from "../utils/http-error";
 
 // Strict schemas: enforce Stellar G... format hint, length bounds, and sanitized inputs.
-const STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
-const NONCE_PATTERN = /^[A-Za-z0-9:_-]+$/;
-const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=:_\-.]+$/;
+const _STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
+const _NONCE_PATTERN = /^[A-Za-z0-9:_-]+$/;
+const _SIGNATURE_PATTERN = /^[A-Za-z0-9+/=:_\-.]+$/;
 
 type AsyncRouteHandler = (req: Request, res: Response, next: NextFunction) => Promise<void> | void;
 
@@ -154,8 +151,8 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
   const controller = createAuthController(authService);
   const authMiddleware = createAuthMiddleware(authService);
 
-  const challengeRateLimiter = createChallengeRateLimitMiddleware(logger);
-  const verifyRateLimiter = createVerifyRateLimitMiddleware(logger);
+  const challengeRateLimiter = createAuthRateLimiter("challenge", { logger });
+  const verifyRateLimiter = createAuthRateLimiter("verify", { logger });
   const idempotencyMiddleware = createIdempotencyMiddleware();
   const circuitBreaker = createCircuitBreaker({ failureThreshold: 5, timeout: 30000 });
 

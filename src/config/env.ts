@@ -31,6 +31,24 @@ export interface AppConfig {
       max: number;
     };
   };
+  redis: {
+    url: string;
+  };
+  rateLimits: {
+    enabled: boolean;
+    auth: {
+      ip: { windowMs: number; max: number };
+      wallet: { windowMs: number; max: number };
+    };
+    invest: {
+      ip: { windowMs: number; max: number };
+      wallet: { windowMs: number; max: number };
+    };
+    invoiceSubmit: {
+      ip: { windowMs: number; max: number };
+      wallet: { windowMs: number; max: number };
+    };
+  };
   reconciliation: {
     enabled: boolean;
     intervalMs: number;
@@ -217,6 +235,92 @@ export function getConfig(): AppConfig {
           "RATE_LIMIT_WINDOW_MS"
         ),
         max: parsePositiveInteger(process.env.RATE_LIMIT_MAX, 100, "RATE_LIMIT_MAX"),
+      },
+    },
+
+    redis: {
+      url: process.env.REDIS_URL ?? "redis://localhost:6379",
+    },
+
+    rateLimits: {
+      enabled: parseBoolean(process.env.RATE_LIMIT_ENABLED, true, "RATE_LIMIT_ENABLED"),
+      auth: {
+        ip: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_IP_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_AUTH_IP_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_IP_MAX,
+            20,
+            "RATE_LIMIT_AUTH_IP_MAX"
+          ),
+        },
+        wallet: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_WALLET_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_AUTH_WALLET_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_WALLET_MAX,
+            10,
+            "RATE_LIMIT_AUTH_WALLET_MAX"
+          ),
+        },
+      },
+      invest: {
+        ip: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_IP_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVEST_IP_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_IP_MAX,
+            30,
+            "RATE_LIMIT_INVEST_IP_MAX"
+          ),
+        },
+        wallet: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_WALLET_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVEST_WALLET_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_WALLET_MAX,
+            10,
+            "RATE_LIMIT_INVEST_WALLET_MAX"
+          ),
+        },
+      },
+      invoiceSubmit: {
+        ip: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_IP_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVOICE_SUBMIT_IP_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_IP_MAX,
+            30,
+            "RATE_LIMIT_INVOICE_SUBMIT_IP_MAX"
+          ),
+        },
+        wallet: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_WALLET_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVOICE_SUBMIT_WALLET_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_WALLET_MAX,
+            10,
+            "RATE_LIMIT_INVOICE_SUBMIT_WALLET_MAX"
+          ),
+        },
       },
     },
 
