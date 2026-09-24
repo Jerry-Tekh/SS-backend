@@ -62,6 +62,8 @@ export interface PublicInvoiceDTO {
 }
 
 @Entity("invoices")
+@Index("idx_invoices_seller_created_at", ["sellerId", "createdAt", "id"])
+@Index("idx_invoices_seller_status_created_at", ["sellerId", "status", "createdAt", "id"])
 @Index("idx_invoices_seller_status_created", ["sellerId", "status", "createdAt"])
 @Index("idx_invoices_status_due_date", ["status", "dueDate"])
 @Index("idx_invoices_status_created_at", ["status", "createdAt"])

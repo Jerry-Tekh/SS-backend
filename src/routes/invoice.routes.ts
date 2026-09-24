@@ -104,9 +104,10 @@ const batchPublishSchema = Joi.object({
 });
 
 const getInvoicesQuerySchema = Joi.object({
-  page: Joi.number().integer().min(1).default(1),
+  page: Joi.number().integer().min(1).optional(),
   limit: Joi.number().integer().min(1).max(100).default(20),
   status: Joi.string().valid(...Object.values(InvoiceStatus)).optional(),
+  cursor: Joi.string().allow("", null).optional(),
 });
 
 const calculateTermsSchema = Joi.object({
@@ -173,7 +174,7 @@ function validateQuery(schema: Joi.Schema) {
     });
 
     if (error) {
-      return next(new HttpError(400, `Invalid query parameters: ${error.message}`));
+      return next(new HttpError(422, `Invalid query parameters: ${error.message}`));
     }
 
     // Replace req.query with validated value
