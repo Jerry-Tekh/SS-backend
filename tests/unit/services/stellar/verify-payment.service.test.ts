@@ -265,7 +265,7 @@ describe("VerifyPaymentService", () => {
     });
 
     it("should throw invalid_payment when no payment operation matches", async () => {
-      const investment = createMockInvestment({ investmentAmount: "999.0000" });
+      const investment = createMockInvestment({ investmentAmount: "500.0000" });
 
       const { service } = createService({
         investment,
