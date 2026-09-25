@@ -18,6 +18,8 @@ interface AuthTokenPayload {
   sub: string;
   stellarAddress: string;
   userId?: string;
+  userType?: UserType;
+  role?: UserType;
 }
 
 /**
@@ -240,14 +242,14 @@ export function authenticateJWT(req: Request, _res: Response, next: NextFunction
     return;
   }
 
-  const { userId, stellarAddress } = claims as Partial<AuthTokenPayload>;
+  const { userId, stellarAddress, userType, role } = claims as Partial<AuthTokenPayload>;
 
   (req as AuthenticatedRequest).user = {
     id: nonEmptyString(userId) ?? subject,
     // Tokens are issued with the wallet address as subject.
     stellarAddress: nonEmptyString(stellarAddress) ?? subject,
     email: null,
-    userType: null as unknown as UserType,
+    userType: userType || role || (null as unknown as UserType),
     kycStatus: null as unknown as KYCStatus,
     isKycVerified: false,
     createdAt: new Date(),

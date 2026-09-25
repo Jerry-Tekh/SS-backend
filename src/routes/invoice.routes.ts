@@ -5,6 +5,7 @@ import Joi from "joi";
 import type { InvoiceService } from "../services/invoice.service";
 import type { AppConfig } from "../config/env";
 import { createInvoiceController } from "../controllers/invoice.controller";
+import { submitInvoice } from "./invoices/submit";
 import { createInvoiceInvestmentController } from "../controllers/invoice-investment.controller";
 import { authenticateJWT, createAuthMiddleware, requireKYC } from "../middleware/auth.middleware";
 import { checkContractNotPaused } from "../middleware/contract-pause-guard.middleware";
@@ -254,14 +255,34 @@ export function createInvoiceRouter({
   // GET /api/v1/invoices - List invoices for authenticated seller
   router.get("/", authenticateJWT, validateQuery(getInvoicesQuerySchema), controller.getInvoices);
 
-  // POST /api/v1/invoices - Create new invoice
+  // POST /api/v1/invoices and POST /invoices - Submit invoice for admin review or create draft invoice
   router.post(
     "/",
     authenticateJWT,
+    (req: Request, res: Response, next: NextFunction) => {
+      const isSubmission =
+        req.baseUrl === "/invoices" ||
+        req.body?.title !== undefined ||
+        req.body?.faceValue !== undefined ||
+        req.body?.fundingTarget !== undefined ||
+        req.body?.yieldBps !== undefined ||
+        req.body?.fundingDeadline !== undefined ||
+        req.body?.ipfsDocumentUrl !== undefined;
+
+      if (isSubmission) {
+        return submitInvoice(req, res, invoiceService);
+      }
+      next();
+    },
     kycGating,
     validateBody(createInvoiceSchema),
     controller.createInvoice
   );
+
+  // POST /api/v1/invoices/submit - Explicit submit alias
+  router.post("/submit", authenticateJWT, (req: Request, res: Response) => {
+    return submitInvoice(req, res, invoiceService);
+  });
 
   // POST /api/v1/invoices/batch-publish - Publish several drafts atomically.
   // Declared ahead of the "/:id" routes so "batch-publish" is never matched as

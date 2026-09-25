@@ -68,6 +68,14 @@ export interface PublicInvoiceDTO {
   status: InvoiceStatus;
   smartContractId: string | null;
   rejectionReason: string | null;
+  title?: string | null;
+  description?: string | null;
+  faceValue?: string | null;
+  fundingTarget?: string | null;
+  yieldBps?: number | null;
+  fundingDeadline?: Date | null;
+  ipfsDocumentUrl?: string | null;
+  sellerWallet?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -141,6 +149,31 @@ export class Invoice {
 
   @Column({ name: "rejection_reason", type: "text", nullable: true })
   rejectionReason!: string | null;
+
+  @Column({ type: "varchar", length: 255, nullable: true })
+  title!: string | null;
+
+  @Column({ type: "text", nullable: true })
+  description!: string | null;
+
+  @Column({ name: "face_value", type: "decimal", precision: 18, scale: 4, nullable: true })
+  faceValue!: string | null;
+
+  @Column({ name: "funding_target", type: "decimal", precision: 18, scale: 4, nullable: true })
+  fundingTarget!: string | null;
+
+  @Column({ name: "yield_bps", type: "int", nullable: true })
+  yieldBps!: number | null;
+
+  @Column({ name: "funding_deadline", type: "timestamp", nullable: true })
+  fundingDeadline!: Date | null;
+
+  @Column({ name: "ipfs_document_url", type: "varchar", length: 512, nullable: true })
+  ipfsDocumentUrl!: string | null;
+
+  @Column({ name: "seller_wallet", type: "varchar", length: 56, nullable: true })
+  @Index("idx_invoices_seller_wallet")
+  sellerWallet!: string | null;
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
