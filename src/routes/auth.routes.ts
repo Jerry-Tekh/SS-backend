@@ -124,6 +124,27 @@ function createIdempotencyMiddleware() {
 
 
 
+function validateQuery(schema: Joi.Schema): RequestHandler {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const { error, value } = schema.validate(req.query, {
+      stripUnknown: true,
+      convert: true,
+    });
+
+    if (error) {
+      return next(new HttpError(400, `Invalid query parameters: ${error.message}`));
+    }
+
+    Object.defineProperty(req, "query", {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+    next();
+  };
+}
+
 export function createAuthRouter(authService: AuthService, logger: AppLogger): Router {
   const router = Router();
   const controller = createAuthController(authService);
@@ -164,6 +185,13 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
   router.use(markAuthRouteBase());
   router.use(noStoreAuthResponse());
   router.use(idempotencyMiddleware);
+
+  router.get(
+    "/challenge",
+    challengeRateLimiter,
+    validateQuery(challengeSchema),
+    withCircuitBreakerAndWrap("auth.challenge", controller.challenge as AsyncRouteHandler)
+  );
 
   router.post(
     "/challenge",
