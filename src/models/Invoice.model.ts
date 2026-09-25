@@ -701,6 +701,149 @@ export class Invoice {
   }
 
   /**
+   * Evaluates if the invoice due date has passed.
+   */
+  isExpired(referenceDate: Date = new Date()): boolean {
+    return this.dueDate ? new Date(this.dueDate).getTime() < referenceDate.getTime() : false;
+  }
+
+  /**
+   * Checks whether the invoice can be published.
+   */
+  isPublishable(): boolean {
+    return (
+      (this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING) &&
+      !this.isExpired() &&
+      Boolean(this.ipfsHash && this.ipfsHash.trim().length > 0)
+    );
+  }
+
+  /**
+   * Checks whether the invoice can be cancelled.
+   */
+  canBeCancelled(): boolean {
+    return (
+      this.status === InvoiceStatus.DRAFT ||
+      this.status === InvoiceStatus.PENDING ||
+      this.status === InvoiceStatus.PUBLISHED ||
+      this.status === InvoiceStatus.FUNDED ||
+      this.status === InvoiceStatus.SETTLED
+    );
+  }
+
+  /**
+   * Checks whether the invoice can be rejected.
+   */
+  canBeRejected(): boolean {
+    return this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING;
+  }
+
+  /**
+   * Checks whether the invoice is in a fundable state.
+   */
+  isFundable(): boolean {
+    return this.status === InvoiceStatus.PUBLISHED && !this.isExpired();
+  }
+
+  /**
+   * Checks whether the invoice is in a settlable state.
+   */
+  isSettlable(): boolean {
+    return this.status === InvoiceStatus.FUNDED;
+  }
+
+  /**
+   * Calculates and formats amounts using Decimal precision and sanitizes customer name.
+   */
+  calculateAndFormatAmounts(): void {
+    try {
+      if (this.customerName) {
+        this.customerName = String(this.customerName).trim();
+      }
+
+      if (this.amount !== undefined && this.amount !== null) {
+        const amt = new Decimal(this.amount);
+        if (!amt.isFinite() || amt.isNegative()) {
+          throw new AppError(400, "Amount must be positive", "INVALID_AMOUNT");
+        }
+        this.amount = amt.toFixed(4);
+      }
+
+      if (this.discountRate !== undefined && this.discountRate !== null) {
+        const disc = new Decimal(this.discountRate);
+        if (!disc.isFinite() || disc.isNegative() || disc.gt(100)) {
+          throw new AppError(400, "Discount rate must be between 0 and 100", "INVALID_DISCOUNT_RATE");
+        }
+        this.discountRate = disc.toFixed(2);
+      }
+
+      if (this.amount && this.discountRate) {
+        this.netAmount = Invoice.calculateNetAmount(this.amount, this.discountRate);
+      }
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      logger.error("Failed to calculate and format invoice amounts", {
+        error: error instanceof Error ? error.message : String(error),
+        invoiceId: this.id,
+      });
+      throw new AppError(500, "Failed to calculate amounts", "CALCULATION_FAILED");
+    }
+  }
+
+  /**
+   * Validates invoice readiness for publish.
+   */
+  validateForPublish(): void {
+    if (!this.ipfsHash || !String(this.ipfsHash).trim()) {
+      throw new AppError(400, "IPFS document is required to publish invoice", "MISSING_IPFS_HASH");
+    }
+    if (this.isExpired()) {
+      throw new AppError(400, "Cannot publish an overdue invoice", "INVOICE_OVERDUE");
+    }
+  }
+
+  /**
+   * Batch updates status of multiple invoices safely.
+   */
+  static async batchUpdateStatus(
+    invoices: Invoice[],
+    targetStatus: InvoiceStatus,
+    rejectionReason?: string | null,
+  ): Promise<Invoice[]> {
+    try {
+      for (const invoice of invoices) {
+        Invoice.transitionTo(invoice, targetStatus, rejectionReason);
+      }
+      return invoices;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      logger.error("Failed batch updating invoice status", {
+        error: error instanceof Error ? error.message : String(error),
+        targetStatus,
+      });
+      throw new AppError(500, "Failed to update batch status", "BATCH_STATUS_UPDATE_FAILED");
+    }
+  }
+
+  /**
+   * Processes a batch of invoices safely with amount normalization.
+   */
+  static async processBatch(invoices: Invoice[]): Promise<Invoice[]> {
+    try {
+      for (const invoice of invoices) {
+        invoice.calculateAndFormatAmounts();
+      }
+      return invoices;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      logger.error("Failed processing batch invoices", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new AppError(500, "Failed to process batch", "BATCH_PROCESS_FAILED");
+    }
+  }
+
+  /**
    * Serializes entity to a clean DTO payload.
    * Optimized with direct field mapping to avoid unnecessary operations.
    */
