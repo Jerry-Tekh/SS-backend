@@ -18,6 +18,8 @@ import { AuthChallenge } from "../../src/models/AuthChallenge.model";
 import { Transaction } from "../../src/models/Transaction.model";
 import { KYCVerification } from "../../src/models/KYCVerification.model";
 import { Notification } from "../../src/models/Notification.model";
+import { InvestorReturn } from "../../src/models/InvestorReturn.model";
+import { SettlementRemainder } from "../../src/models/SettlementRemainder.model";
 import { InvoiceStatusHistory } from "../../src/models/InvoiceStatusHistory.model";
 import { InvoiceStatus, InvestmentStatus, KYCStatus, UserType } from "../../src/types/enums";
 import type { AppConfig } from "../../src/config/env";
@@ -105,6 +107,8 @@ describe("Settlement Endpoint Integration", () => {
         Transaction,
         KYCVerification,
         Notification,
+        InvestorReturn,
+        SettlementRemainder,
         InvoiceStatusHistory,
       ],
       synchronize: true,

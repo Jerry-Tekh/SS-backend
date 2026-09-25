@@ -35,6 +35,8 @@ import { Transaction } from "../../src/models/Transaction.model";
 import { KYCVerification } from "../../src/models/KYCVerification.model";
 import { Notification } from "../../src/models/Notification.model";
 import { InvoiceStatusHistory } from "../../src/models/InvoiceStatusHistory.model";
+import { InvestorReturn } from "../../src/models/InvestorReturn.model";
+import { SettlementRemainder } from "../../src/models/SettlementRemainder.model";
 import { InvoiceStatus, InvestmentStatus, KYCStatus } from "../../src/types/enums";
 import type { AppConfig } from "../../src/config/env";
 import { logger } from "../../src/observability/logger";
@@ -230,6 +232,8 @@ describe("E2E: Complete Invoice Financing Flow", () => {
           KYCVerification,
           Notification,
           InvoiceStatusHistory,
+          InvestorReturn,
+          SettlementRemainder,
         ],
       });
 

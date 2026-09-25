@@ -71,7 +71,8 @@
     "sqlite3": "^5.1.7",
     "stellar-sdk": "^11.2.0",
     "typeorm": "^0.3.17",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
