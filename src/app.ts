@@ -179,6 +179,7 @@ export function createApp({
   }
 
   app.use("/api/v1/auth", createAuthRouter(authService, appLogger));
+  app.use("/auth", createAuthRouter(authService, appLogger));
 
   if (kycService) {
     app.use("/api/v1/kyc", createKycRouter(kycService, authService));

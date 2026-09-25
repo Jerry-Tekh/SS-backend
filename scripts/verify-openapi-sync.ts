@@ -199,6 +199,7 @@ function validateOpenAPIDrift(): boolean {
     const isDocumented =
       specPaths.some((specPath) => specPath.startsWith(route)) ||
       route === "/api/v1/auth" ||
+      route === "/auth" ||
       route === "/api/v1/invoices" ||
       route === "/invoices" ||
       route === "/api/v1/investments" ||

@@ -78,7 +78,7 @@ export interface AppConfig {
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_JWT_EXPIRES_IN = "15m";
-const DEFAULT_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_CHALLENGE_TTL_MS = 60 * 1000; // 60 seconds (Issue #463)
 const DEFAULT_METRICS_ENABLED = true;
 
 const DEFAULT_CACHE_ENABLED = true;
