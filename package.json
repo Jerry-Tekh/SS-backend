@@ -80,6 +80,7 @@
     "@types/cors": "^2.8.17",
     "@types/decimal.js": "^0.0.32",
     "@types/express": "^5.0.0",
+    "@types/ioredis": "^4.28.10",
     "@types/ioredis-mock": "^8.2.8",
     "@types/jest": "^29.5.14",
     "@types/jsonwebtoken": "^9.0.5",

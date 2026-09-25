@@ -2,6 +2,7 @@ import { DataSource, EntityManager } from "typeorm";
 import { Decimal } from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
+import { User } from "../models/User.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { TransactionStatus, TransactionType } from "../types/enums";
 import { Transaction } from "../models/Transaction.model";
@@ -103,7 +104,23 @@ export class SettlementService {
             throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
           }
 
+          if (actorWallet && invoice.sellerId && typeof transactionalEntityManager.findOne === "function") {
+            const seller = await transactionalEntityManager.findOne(User, {
+              where: { id: invoice.sellerId },
+            });
+            if (seller && seller.stellarAddress && seller.stellarAddress !== actorWallet) {
+              throw new ServiceError("FORBIDDEN", "Only the invoice seller can settle this invoice", 403);
+            }
+          }
+
           // 2. Validate invoice status
+          if (invoice.status === InvoiceStatus.SETTLED) {
+            throw new ServiceError(
+              "invoice_already_settled",
+              "Cannot settle an invoice with status settled",
+              409
+            );
+          }
           if (invoice.status !== InvoiceStatus.FUNDED) {
             throw new ServiceError(
               "INVALID_INVOICE_STATUS",

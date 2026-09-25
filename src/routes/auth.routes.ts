@@ -15,6 +15,7 @@ import { createCircuitBreaker } from "../lib/circuit-breaker";
 import type { AuthService } from "../services/auth.service";
 import type { AppLogger } from "../observability/logger";
 import { HttpError } from "../utils/http-error";
+import type { AuthFailureDetails } from "../lib/auth-failure";
 
 // Strict schemas: enforce Stellar G... format hint, length bounds, and sanitized inputs.
 const _STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
@@ -120,7 +121,7 @@ function createIdempotencyMiddleware() {
   };
 }
 
-function normalizeErrorResponse(): ErrorRequestHandler {
+function normalizeErrorResponse(logger?: AppLogger): ErrorRequestHandler {
   return (err: Error, req: Request, res: Response, _next: NextFunction): void => {
     if (err instanceof HttpError) {
       res.status(err.statusCode).json({
@@ -132,6 +133,20 @@ function normalizeErrorResponse(): ErrorRequestHandler {
         },
         requestId: req.headers["x-request-id"],
       });
+
+      const authFailure = (err.details as { authFailure?: AuthFailureDetails } | undefined)
+        ?.authFailure;
+
+      if (err.statusCode === 401 && authFailure && logger) {
+        logger.warn("API authentication failure.", {
+          method: req.method,
+          path: req.originalUrl || req.path,
+          reason: authFailure.reason,
+          truncated_address: authFailure.truncatedAddress,
+          failed_at: authFailure.failedAt,
+          statusCode: err.statusCode,
+        });
+      }
       return;
     }
 
@@ -207,7 +222,7 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
     wrapAuthHandler("auth.me", controller.me as AsyncRouteHandler, logger)
   );
 
-  router.use(normalizeErrorResponse());
+  router.use(normalizeErrorResponse(logger));
 
   return router;
 }

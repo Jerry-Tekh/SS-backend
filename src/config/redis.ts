@@ -4,6 +4,15 @@ import { logger } from "../observability/logger";
 let defaultRedisClient: Redis | null = null;
 
 export function createRedisClient(options?: RedisOptions): Redis {
+  if (process.env.NODE_ENV === "test" && !process.env.REDIS_URL) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const RedisMock = require("ioredis-mock");
+      return new RedisMock(options) as unknown as Redis;
+    } catch {
+      // fallback to standard client
+    }
+  }
   const url = process.env.REDIS_URL || "redis://localhost:6379";
   const client = new Redis(url, {
     lazyConnect: true,

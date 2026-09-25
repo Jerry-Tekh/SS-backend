@@ -182,13 +182,6 @@ describe("Settlement integration: rejecting settlement of non-fully-funded invoi
     jest.clearAllMocks();
   });
 
-    await expect(
-      settlementService.settleInvoice({
-        invoiceId: invoice.id,
-        proceeds: "6000.0000",
-        actorWallet: "GADMIN",
-      })
-    ).rejects.toThrow(/Cannot settle an invoice with status published/);
   it("should reject settlement of a published invoice (no investments)", async () => {
     try {
       const invoice = createInvoice({ status: InvoiceStatus.PUBLISHED });
@@ -339,9 +332,6 @@ describe("Settlement integration: funding multiple investors then settling", () 
       actorWallet: "GADMINWALLET1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     });
 
-    const returnByInvestor = new Map(
-      result.settlements.map((settlement) => [settlement.investorId, settlement.actualReturn])
-    );
       const returnByInvestor = new Map(
         result.settlements.map((settlement) => [settlement.investorId, settlement.actualReturn]),
       );
@@ -352,11 +342,6 @@ describe("Settlement integration: funding multiple investors then settling", () 
       expect(result.status).toBe(InvoiceStatus.SETTLED);
       expect(invoices.get(invoice.id)?.status).toBe(InvoiceStatus.SETTLED);
 
-    const sumOfReturns = result.settlements.reduce(
-      (sum, settlement) => sum + Number(settlement.actualReturn),
-      0
-    );
-    expect(sumOfReturns).toBeCloseTo(6600, 4);
       const sumOfReturns = result.settlements.reduce(
         (sum, settlement) => sum + Number(settlement.actualReturn),
         0,
@@ -405,10 +390,6 @@ describe("Settlement integration: funding multiple investors then settling", () 
       actorWallet: "GADMINWALLET1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     });
 
-    const completionCall = infoSpy.mock.calls.find(
-      ([message]) => message === "Settlement flow completed."
-    );
-    expect(completionCall).toBeDefined();
       const completionCall = infoSpy.mock.calls.find(
         ([message]) => message === "Settlement flow completed.",
       );
