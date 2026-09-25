@@ -361,8 +361,13 @@ export class InvoiceService {
         deletedAt: IsNull(),
       };
 
-      if (options.status && Object.values(InvoiceStatus).includes(options.status)) {
-        where.status = options.status;
+      const normalizedStatus =
+        typeof options.status === "string"
+          ? (options.status.toLowerCase() as InvoiceStatus)
+          : options.status;
+
+      if (normalizedStatus && Object.values(InvoiceStatus).includes(normalizedStatus)) {
+        where.status = normalizedStatus;
       }
 
       // Keyset cursor pagination path
@@ -396,8 +401,8 @@ export class InvoiceService {
           qb.where("invoice.sellerId = :sellerId", { sellerId })
             .andWhere("invoice.deletedAt IS NULL");
 
-          if (options.status && Object.values(InvoiceStatus).includes(options.status)) {
-            qb.andWhere("invoice.status = :status", { status: options.status });
+          if (normalizedStatus && Object.values(InvoiceStatus).includes(normalizedStatus)) {
+            qb.andWhere("invoice.status = :status", { status: normalizedStatus });
           }
 
           if (cursorCreatedAt && cursorId) {
