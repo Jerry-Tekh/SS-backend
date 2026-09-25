@@ -138,10 +138,10 @@ export function createInvoiceController(
         }
 
         const limit = Number(req.query.limit) || 20;
-        const status =
-          typeof req.query.status === "string"
-            ? (req.query.status.toLowerCase() as InvoiceStatus)
-            : undefined;
+        const rawStatus = req.query.status;
+        const status = rawStatus
+          ? (String(rawStatus).trim().toLowerCase() as InvoiceStatus)
+          : undefined;
 
         // Validate limit
         if (limit < 1 || limit > 100) {

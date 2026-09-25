@@ -230,15 +230,14 @@ export class SettlementService {
             }
           }
 
+          // 2. Validate invoice status
           if (invoice.status === InvoiceStatus.SETTLED) {
             throw new ServiceError(
               "invoice_already_settled",
-              `Cannot settle an invoice with status ${invoice.status}`,
+              "Cannot settle an invoice with status settled",
               409
             );
           }
-
-          // 2. Validate invoice status
           if (invoice.status !== InvoiceStatus.FUNDED) {
             throw new ServiceError(
               "INVALID_INVOICE_STATUS",

@@ -361,10 +361,9 @@ export class InvoiceService {
         deletedAt: IsNull(),
       };
 
-      const normalizedStatus =
-        typeof options.status === "string"
-          ? (options.status.toLowerCase() as InvoiceStatus)
-          : options.status;
+      const normalizedStatus = options.status
+        ? (String(options.status).trim().toLowerCase() as InvoiceStatus)
+        : undefined;
 
       if (normalizedStatus && Object.values(InvoiceStatus).includes(normalizedStatus)) {
         where.status = normalizedStatus;

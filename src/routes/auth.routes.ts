@@ -9,10 +9,7 @@ import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { validateBody } from "../middleware/validate.middleware";
-import {
-  createChallengeRateLimitMiddleware,
-  createVerifyRateLimitMiddleware,
-} from "../middleware/rate-limit.middleware";
+import { createAuthRateLimiter } from "../middleware/redis-rate-limit.middleware";
 import { createCircuitBreaker } from "../lib/circuit-breaker";
 import type { AuthService } from "../services/auth.service";
 import type { AppLogger } from "../observability/logger";
@@ -132,8 +129,8 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
   const controller = createAuthController(authService);
   const authMiddleware = createAuthMiddleware(authService);
 
-  const challengeRateLimiter = createChallengeRateLimitMiddleware(logger);
-  const verifyRateLimiter = createVerifyRateLimitMiddleware(logger);
+  const challengeRateLimiter = createAuthRateLimiter("challenge", { logger });
+  const verifyRateLimiter = createAuthRateLimiter("verify", { logger });
   const idempotencyMiddleware = createIdempotencyMiddleware();
   const circuitBreaker = createCircuitBreaker({ failureThreshold: 5, timeout: 30000 });
 
