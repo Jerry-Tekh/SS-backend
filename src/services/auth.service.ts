@@ -7,9 +7,6 @@ import { AuthChallenge } from "../models/AuthChallenge.model";
 import { User, USER_PROFILE_SELECT } from "../models/User.model";
 import type { PublicUser } from "../types/auth";
 import { HttpError } from "../utils/http-error";
-import { buildAuthFailureDetails, classifyJwtError } from "../lib/auth-failure";
-import { AppError, HttpError } from "../utils/http-error";
-import { logger } from "../observability/logger";
 import {
   buildAuthFailureDetails,
   classifyJwtError,
@@ -404,10 +401,10 @@ export class AuthService {
         );
       }
 
-      if (!payload.sub) {
+      if (!payload.sub || typeof payload.sub !== "string" || payload.sub.trim() === "") {
         throw new HttpError(
           401,
-          "Invalid token payload.",
+          "Invalid or expired token.",
           buildAuthFailureDetails(sanitizedToken, "invalid_token"),
         );
       }
@@ -422,35 +419,13 @@ export class AuthService {
         });
         throw new HttpError(500, "Failed to fetch current user.");
       }
-    const sanitizedToken = token?.trim();
-    if (!sanitizedToken) {
-      throw new HttpError(
-        401,
-        "Invalid or expired token.",
-        buildAuthFailureDetails(token, "missing_token")
-      );
-    }
-
-    try {
-      payload = jwt.verify(sanitizedToken, this.config.jwt.secret) as AuthTokenPayload;
-    } catch (error) {
-      throw new HttpError(
-        401,
-        "Invalid or expired token.",
-        buildAuthFailureDetails(sanitizedToken, classifyJwtError(error))
-      );
-    }
-
-    if (!payload.sub) {
-      throw new HttpError(
-        401,
-        "Invalid token payload.",
-        buildAuthFailureDetails(sanitizedToken, "invalid_token")
-      );
-    }
 
       if (!user) {
-        throw new HttpError(401, "User no longer exists.");
+        throw new HttpError(
+          401,
+          "Invalid or expired token.",
+          buildAuthFailureDetails(sanitizedToken, "invalid_token"),
+        );
       }
 
       return toPublicUser(user);
@@ -505,34 +480,32 @@ export class AuthService {
 
     const promise = (async () => {
       const sanitized = publicKey.trim();
-  private async upsertUser(publicKey: string): Promise<User> {
-    const sanitized = publicKey.trim();
-    try {
-      const existingUser = await this.userRepository.findByStellarAddress(sanitized);
-      if (existingUser) {
-        this.logger?.debug("auth.user_found", { wallet: sanitized });
-        return existingUser;
+      try {
+        const existingUser = await this.userRepository.findByStellarAddress(sanitized);
+        if (existingUser) {
+          this.logger?.debug("auth.user_found", { wallet: sanitized });
+          return existingUser;
+        }
+        const created = await this.userRepository.save({ stellarAddress: sanitized });
+        this.logger?.info("auth.user_upserted", {
+          wallet: sanitized,
+          user_id: created.id,
+        });
+        return created;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("duplicate key")) {
+          const existing = await this.userRepository.findByStellarAddress(sanitized);
+          if (existing) return existing;
+        }
+        this.logger?.error("upsertUser failed", { error, publicKey });
+        throw error;
       }
-      const created = await this.userRepository.save({ stellarAddress: sanitized });
-      this.logger?.info("auth.user_upserted", {
-        wallet: sanitized,
-        user_id: created.id,
-      });
-      return created;
     })().finally(() => {
       this.userUpsertInflight.delete(publicKey);
     });
 
     this.userUpsertInflight.set(publicKey, promise);
     return promise;
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("duplicate key")) {
-        const existing = await this.userRepository.findByStellarAddress(sanitized);
-        if (existing) return existing;
-      }
-      this.logger?.error("upsertUser failed", { error, publicKey });
-      throw error;
-    }
   }
 
   private signToken(user: PublicUser): string {
@@ -552,6 +525,22 @@ export class AuthService {
       }
     );
   }
+
+  generateToken(user: { id: string; stellarAddress: string }): string & { token: string } {
+    const rawToken = jwt.sign(
+      {
+        stellarAddress: user.stellarAddress,
+        userId: user.id,
+      },
+      this.config.jwt.secret,
+      {
+        expiresIn: this.config.jwt.expiresIn as SignOptions["expiresIn"],
+        subject: user.stellarAddress,
+      }
+    );
+    const tokenObj = Object.assign(new String(rawToken), { token: rawToken });
+    return tokenObj as unknown as string & { token: string };
+  }
 }
 
 class TypeOrmUserRepository implements UserRepositoryContract {
@@ -560,14 +549,14 @@ class TypeOrmUserRepository implements UserRepositoryContract {
   findById(id: string): Promise<User | null> {
     return this.repository.findOne({
       where: { id },
-      select: USER_PROFILE_SELECT,
+      select: [...USER_PROFILE_SELECT],
     });
   }
 
   findByStellarAddress(stellarAddress: string): Promise<User | null> {
     return this.repository.findOne({
       where: { stellarAddress },
-      select: USER_PROFILE_SELECT,
+      select: [...USER_PROFILE_SELECT],
     });
   }
 

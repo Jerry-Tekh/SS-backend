@@ -39,6 +39,7 @@ export interface SettleInvoiceInput {
   invoiceId: string;
   proceeds: string;
   actorWallet: string;
+  sellerId?: string;
 }
 
 export interface PaymentDistributorSettlementConfig {
@@ -178,7 +179,7 @@ export class SettlementService {
    * a settlement event for downstream processing.
    */
   async settleInvoice(input: SettleInvoiceInput): Promise<SettleInvoiceResult> {
-    const { invoiceId, proceeds: proceedsInput, actorWallet } = input;
+    const { invoiceId, proceeds: proceedsInput, actorWallet, sellerId } = input;
 
     const proceeds = new Decimal(proceedsInput);
     if (proceeds.isNegative() || proceeds.isZero()) {
@@ -213,6 +214,18 @@ export class SettlementService {
 
           if (!invoice) {
             throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
+          }
+
+          if (sellerId && invoice.sellerId && invoice.sellerId !== sellerId) {
+            throw new ServiceError("FORBIDDEN", "Only the seller can settle this invoice", 403);
+          }
+
+          if (invoice.status === InvoiceStatus.SETTLED) {
+            throw new ServiceError(
+              "invoice_already_settled",
+              `Cannot settle an invoice with status ${invoice.status}`,
+              409
+            );
           }
 
           // 2. Validate invoice status

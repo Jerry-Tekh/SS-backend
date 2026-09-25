@@ -10,6 +10,8 @@ import {
   JoinColumn,
   Index,
   VersionColumn,
+  BeforeInsert,
+  BeforeUpdate,
 } from "typeorm";
 import Decimal from "decimal.js";
 import { InvoiceStatus } from "../types/enums";
@@ -105,14 +107,14 @@ export class Invoice {
    * version-checked updates, and capped at netAmount by a CHECK constraint.
    */
   @Column({ name: "funded_amount", type: "decimal", precision: 18, scale: 4, default: 0 })
-  fundedAmount!: string;
+  fundedAmount?: string;
 
   /**
    * Remainder dust left over after floor division on settlement.
    * Handled and recorded separately from investor returns.
    */
   @Column({ name: "settlement_remainder", type: "decimal", precision: 18, scale: 4, default: 0 })
-  settlementRemainder!: string;
+  settlementRemainder?: string;
 
   @Column({ name: "due_date", type: "date" })
   @Index("idx_invoices_due_date")
@@ -157,16 +159,14 @@ export class Invoice {
   seller!: import("./User.model").User;
 
   @OneToMany("Investment", "invoice")
-  investments!: import("./Investment.model").Investment[];
+  investments?: import("./Investment.model").Investment[];
 
   @OneToMany("Transaction", "invoice")
-  transactions!: import("./Transaction.model").Transaction[];
+  transactions?: import("./Transaction.model").Transaction[];
 
-  @OneToMany("InvestorReturn", "invoice")
-  investorReturns!: import("./InvestorReturn.model").InvestorReturn[];
+  investorReturns?: import("./InvestorReturn.model").InvestorReturn[];
 
-  @OneToMany("SettlementRemainder", "invoice")
-  settlementRemainders!: import("./SettlementRemainder.model").SettlementRemainder[];
+  settlementRemainders?: import("./SettlementRemainder.model").SettlementRemainder[];
 
   /**
    * Calculates the exact net amount using arbitrary-precision decimal arithmetic.
@@ -588,5 +588,87 @@ export class Invoice {
       });
       throw new AppError(500, "Failed to serialize invoice", "INVOICE_SERIALIZATION_FAILED");
     }
+  }
+
+  isExpired(): boolean {
+    if (!this.dueDate) return false;
+    return new Date(this.dueDate).getTime() < Date.now();
+  }
+
+  isPublishable(): boolean {
+    return (
+      (this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING) &&
+      !this.isExpired() &&
+      Boolean(this.ipfsHash)
+    );
+  }
+
+  canBeCancelled(): boolean {
+    return this.status !== InvoiceStatus.SETTLED && this.status !== InvoiceStatus.CANCELLED;
+  }
+
+  canBeRejected(): boolean {
+    return (
+      this.status !== InvoiceStatus.SETTLED &&
+      this.status !== InvoiceStatus.CANCELLED &&
+      this.status !== InvoiceStatus.REJECTED
+    );
+  }
+
+  isFundable(): boolean {
+    return this.status === InvoiceStatus.PUBLISHED;
+  }
+
+  isSettlable(): boolean {
+    return this.status === InvoiceStatus.FUNDED;
+  }
+
+  @BeforeInsert()
+  @BeforeUpdate()
+  calculateAndFormatAmounts(): void {
+    if (this.customerName) {
+      this.customerName = this.customerName.trim();
+    }
+    if (this.amount !== undefined && this.amount !== null) {
+      const amountDec = new Decimal(this.amount);
+      if (amountDec.isNegative()) {
+        throw new AppError(400, "Invoice amount cannot be negative", "INVALID_INVOICE_AMOUNT");
+      }
+      this.amount = amountDec.toFixed(4);
+    }
+    if (this.discountRate !== undefined && this.discountRate !== null) {
+      const discountDec = new Decimal(this.discountRate);
+      if (discountDec.isNegative() || discountDec.gt(100)) {
+        throw new AppError(400, "Discount rate must be between 0 and 100", "INVALID_DISCOUNT_RATE");
+      }
+      this.discountRate = discountDec.toFixed(2);
+    }
+    if (this.amount && this.discountRate !== undefined) {
+      this.netAmount = Invoice.calculateNetAmount(this.amount, this.discountRate);
+    }
+  }
+
+  validateForPublish(): void {
+    if (!this.ipfsHash || !this.dueDate || this.isExpired()) {
+      throw new AppError(400, "Invoice is not valid for publish", "INVALID_FOR_PUBLISH");
+    }
+  }
+
+  static async batchUpdateStatus(
+    invoices: Invoice[],
+    targetStatus: InvoiceStatus,
+    rejectionReason?: string
+  ): Promise<Invoice[]> {
+    for (const inv of invoices) {
+      Invoice.transitionTo(inv, targetStatus, rejectionReason);
+    }
+    return invoices;
+  }
+
+  static async processBatch(invoices: Invoice[]): Promise<Invoice[]> {
+    for (const inv of invoices) {
+      inv.calculateAndFormatAmounts();
+    }
+    return invoices;
   }
 }

@@ -173,7 +173,7 @@ function validateQuery(schema: Joi.Schema) {
     });
 
     if (error) {
-      return next(new HttpError(400, `Invalid query parameters: ${error.message}`));
+      return next(new HttpError(422, `Invalid query parameters: ${error.message}`));
     }
 
     // Replace req.query with validated value
