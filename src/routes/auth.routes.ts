@@ -4,7 +4,6 @@ import {
   type Request,
   type RequestHandler,
   type Response,
-  type ErrorRequestHandler,
 } from "express";
 import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
@@ -20,9 +19,9 @@ import type { AppLogger } from "../observability/logger";
 import { HttpError } from "../utils/http-error";
 
 // Strict schemas: enforce Stellar G... format hint, length bounds, and sanitized inputs.
-const STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
-const NONCE_PATTERN = /^[A-Za-z0-9:_-]+$/;
-const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=:_\-.]+$/;
+const _STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
+const _NONCE_PATTERN = /^[A-Za-z0-9:_-]+$/;
+const _SIGNATURE_PATTERN = /^[A-Za-z0-9+/=:_\-.]+$/;
 
 type AsyncRouteHandler = (req: Request, res: Response, next: NextFunction) => Promise<void> | void;
 
@@ -87,7 +86,7 @@ function createIdempotencyMiddleware() {
   >();
   const TTL_MS = 60 * 60 * 1000;
 
-  setInterval(
+  const cleanupInterval = setInterval(
     () => {
       const now = Date.now();
       for (const [key, value] of cache.entries()) {
@@ -98,6 +97,9 @@ function createIdempotencyMiddleware() {
     },
     5 * 60 * 1000
   );
+  if (cleanupInterval.unref) {
+    cleanupInterval.unref();
+  }
 
   return (req: Request, res: Response, next: NextFunction) => {
     const key = extractIdempotencyKey(req);
@@ -123,31 +125,7 @@ function createIdempotencyMiddleware() {
   };
 }
 
-function normalizeErrorResponse(): ErrorRequestHandler {
-  return (err: Error, req: Request, res: Response, _next: NextFunction): void => {
-    if (err instanceof HttpError) {
-      res.status(err.statusCode).json({
-        success: false,
-        error: {
-          code: err.code ?? "INTERNAL_ERROR",
-          message: err.message,
-          details: err.details,
-        },
-        requestId: req.headers["x-request-id"],
-      });
-      return;
-    }
 
-    res.status(500).json({
-      success: false,
-      error: {
-        code: "INTERNAL_ERROR",
-        message: "An unexpected error occurred",
-      },
-      requestId: req.headers["x-request-id"],
-    });
-  };
-}
 
 export function createAuthRouter(authService: AuthService, logger: AppLogger): Router {
   const router = Router();
@@ -209,8 +187,6 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
     authMiddleware,
     wrapAuthHandler("auth.me", controller.me as AsyncRouteHandler, logger)
   );
-
-  router.use(normalizeErrorResponse());
 
   return router;
 }

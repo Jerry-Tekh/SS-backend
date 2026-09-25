@@ -10,6 +10,8 @@ import {
   JoinColumn,
   Index,
   VersionColumn,
+  BeforeInsert,
+  BeforeUpdate,
 } from "typeorm";
 import Decimal from "decimal.js";
 import { InvoiceStatus } from "../types/enums";
@@ -20,15 +22,24 @@ import { AppError } from "../utils/http-error";
  * Frozen state transition map optimized for performance.
  * Prevents accidental mutations and enables faster lookups.
  */
-export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, readonly InvoiceStatus[]> = Object.freeze({
-  [InvoiceStatus.DRAFT]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
-  [InvoiceStatus.PENDING]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
-  [InvoiceStatus.PUBLISHED]: Object.freeze([InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED]),
-  [InvoiceStatus.FUNDED]: Object.freeze([InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED]),
-  [InvoiceStatus.SETTLED]: Object.freeze([InvoiceStatus.CANCELLED]),
-  [InvoiceStatus.CANCELLED]: Object.freeze([]),
-  [InvoiceStatus.REJECTED]: Object.freeze([]),
-});
+export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, readonly InvoiceStatus[]> =
+  Object.freeze({
+    [InvoiceStatus.DRAFT]: Object.freeze([
+      InvoiceStatus.PUBLISHED,
+      InvoiceStatus.CANCELLED,
+      InvoiceStatus.REJECTED,
+    ]),
+    [InvoiceStatus.PENDING]: Object.freeze([
+      InvoiceStatus.PUBLISHED,
+      InvoiceStatus.CANCELLED,
+      InvoiceStatus.REJECTED,
+    ]),
+    [InvoiceStatus.PUBLISHED]: Object.freeze([InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED]),
+    [InvoiceStatus.FUNDED]: Object.freeze([InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED]),
+    [InvoiceStatus.SETTLED]: Object.freeze([InvoiceStatus.CANCELLED]),
+    [InvoiceStatus.CANCELLED]: Object.freeze([]),
+    [InvoiceStatus.REJECTED]: Object.freeze([]),
+  });
 
 /**
  * Validation constraints for invoice fields.
@@ -96,7 +107,14 @@ export class Invoice {
    * version-checked updates, and capped at netAmount by a CHECK constraint.
    */
   @Column({ name: "funded_amount", type: "decimal", precision: 18, scale: 4, default: 0 })
-  fundedAmount!: string;
+  fundedAmount?: string;
+
+  /**
+   * Remainder dust left over after floor division on settlement.
+   * Handled and recorded separately from investor returns.
+   */
+  @Column({ name: "settlement_remainder", type: "decimal", precision: 18, scale: 4, default: 0 })
+  settlementRemainder?: string;
 
   @Column({ name: "due_date", type: "date" })
   @Index("idx_invoices_due_date")
@@ -141,27 +159,31 @@ export class Invoice {
   seller!: import("./User.model").User;
 
   @OneToMany("Investment", "invoice")
-  investments!: import("./Investment.model").Investment[];
+  investments?: import("./Investment.model").Investment[];
 
   @OneToMany("Transaction", "invoice")
-  transactions!: import("./Transaction.model").Transaction[];
+  transactions?: import("./Transaction.model").Transaction[];
+
+  investorReturns?: import("./InvestorReturn.model").InvestorReturn[];
+
+  settlementRemainders?: import("./SettlementRemainder.model").SettlementRemainder[];
 
   /**
    * Calculates the exact net amount using arbitrary-precision decimal arithmetic.
    * Net Amount = amount * (1 - discountRate / 100) rounded to 4 decimal places.
    * Optimized with early validation and efficient decimal operations.
-   * 
+   *
    * @throws AppError if inputs are invalid or calculation fails
    */
   static calculateNetAmount(
     amount: string | number | Decimal,
-    discountRate: string | number | Decimal,
+    discountRate: string | number | Decimal
   ): string {
     try {
       // Convert to Decimal with error handling
       let amt: Decimal;
       let disc: Decimal;
-      
+
       try {
         amt = new Decimal(amount);
         disc = new Decimal(discountRate);
@@ -169,7 +191,7 @@ export class Invoice {
         throw new AppError(
           400,
           "Amount and discount rate must be valid numeric values",
-          "INVALID_AMOUNT_OR_DISCOUNT",
+          "INVALID_AMOUNT_OR_DISCOUNT"
         );
       }
 
@@ -184,7 +206,7 @@ export class Invoice {
         throw new AppError(
           400,
           "Amount must be non-negative and discount rate must be between 0 and 100",
-          "INVALID_AMOUNT_OR_DISCOUNT",
+          "INVALID_AMOUNT_OR_DISCOUNT"
         );
       }
 
@@ -196,18 +218,18 @@ export class Invoice {
       if (error instanceof AppError) {
         throw error;
       }
-      
+
       logger.error("Failed to calculate invoice net amount", {
         error: error instanceof Error ? error.message : String(error),
         amount: String(amount),
         discountRate: String(discountRate),
         context: "Invoice.calculateNetAmount",
       });
-      
+
       throw new AppError(
         500,
         "Failed to calculate invoice net amount",
-        "NET_AMOUNT_CALCULATION_FAILED",
+        "NET_AMOUNT_CALCULATION_FAILED"
       );
     }
   }
@@ -216,13 +238,16 @@ export class Invoice {
    * Sanitizes and normalizes invoice fields to prevent data corruption.
    * Optimized to minimize object traversal and reduce redundant operations.
    * Handles null/undefined gracefully without deep equality checks.
-   * 
+   *
    * @throws AppError if normalization fails
    */
   static sanitizeAndNormalize(invoice: Partial<Invoice>): void {
     try {
       // Helper function to trim and truncate strings
-      const sanitizeString = (value: string | undefined | null, maxLength: number): string | null => {
+      const sanitizeString = (
+        value: string | undefined | null,
+        maxLength: number
+      ): string | null => {
         if (value === undefined || value === null) return value as null;
         const trimmed = String(value).trim();
         return trimmed.length > 0 ? trimmed.slice(0, maxLength) : null;
@@ -230,19 +255,29 @@ export class Invoice {
 
       // Sanitize string fields efficiently
       if (invoice.invoiceNumber !== undefined && invoice.invoiceNumber !== null) {
-        invoice.invoiceNumber = sanitizeString(invoice.invoiceNumber, VALIDATION_CONSTRAINTS.INVOICE_NUMBER_MAX_LENGTH) || invoice.invoiceNumber;
+        invoice.invoiceNumber =
+          sanitizeString(invoice.invoiceNumber, VALIDATION_CONSTRAINTS.INVOICE_NUMBER_MAX_LENGTH) ||
+          invoice.invoiceNumber;
       }
 
       if (invoice.customerName !== undefined && invoice.customerName !== null) {
-        invoice.customerName = sanitizeString(invoice.customerName, VALIDATION_CONSTRAINTS.CUSTOMER_NAME_MAX_LENGTH) || invoice.customerName;
+        invoice.customerName =
+          sanitizeString(invoice.customerName, VALIDATION_CONSTRAINTS.CUSTOMER_NAME_MAX_LENGTH) ||
+          invoice.customerName;
       }
 
       if (invoice.ipfsHash !== undefined) {
-        invoice.ipfsHash = sanitizeString(invoice.ipfsHash, VALIDATION_CONSTRAINTS.IPFS_HASH_MAX_LENGTH);
+        invoice.ipfsHash = sanitizeString(
+          invoice.ipfsHash,
+          VALIDATION_CONSTRAINTS.IPFS_HASH_MAX_LENGTH
+        );
       }
 
       if (invoice.smartContractId !== undefined) {
-        invoice.smartContractId = sanitizeString(invoice.smartContractId, VALIDATION_CONSTRAINTS.SMART_CONTRACT_ID_MAX_LENGTH);
+        invoice.smartContractId = sanitizeString(
+          invoice.smartContractId,
+          VALIDATION_CONSTRAINTS.SMART_CONTRACT_ID_MAX_LENGTH
+        );
       }
 
       if (invoice.rejectionReason !== undefined) {
@@ -260,7 +295,7 @@ export class Invoice {
         try {
           const amtStr = String(invoice.amount).trim();
           const discStr = String(invoice.discountRate).trim();
-          
+
           // Quick validation before expensive calculation
           if (amtStr && discStr && !isNaN(Number(amtStr)) && !isNaN(Number(discStr))) {
             invoice.netAmount = Invoice.calculateNetAmount(amtStr, discStr);
@@ -281,15 +316,15 @@ export class Invoice {
         invoiceNumber: invoice.invoiceNumber,
         context: "Invoice.sanitizeAndNormalize",
       });
-      
+
       if (error instanceof AppError) {
         throw error;
       }
-      
+
       throw new AppError(
         500,
         `Invoice normalization failed: ${error instanceof Error ? error.message : String(error)}`,
-        "INVOICE_NORMALIZATION_FAILED",
+        "INVOICE_NORMALIZATION_FAILED"
       );
     }
   }
@@ -302,13 +337,13 @@ export class Invoice {
     try {
       const current = currentStatus ?? InvoiceStatus.DRAFT;
       const allowed = VALID_INVOICE_TRANSITIONS[current];
-      
+
       // Handle edge case where status key doesn't exist
       if (!allowed) {
         logger.warn("Unknown invoice status in transition check", { status: current });
         return false;
       }
-      
+
       return allowed.includes(targetStatus);
     } catch (error) {
       logger.error("Error checking invoice transition validity", {
@@ -324,13 +359,13 @@ export class Invoice {
   /**
    * Safely transitions the invoice status with validation.
    * Optimized to minimize state mutations and improve error context.
-   * 
+   *
    * @throws AppError if transition is invalid or operation fails
    */
   static transitionTo(
     invoice: Invoice,
     targetStatus: InvoiceStatus,
-    rejectionReason?: string | null,
+    rejectionReason?: string | null
   ): void {
     try {
       // Validate transition before modifying state
@@ -338,20 +373,20 @@ export class Invoice {
         throw new AppError(
           400,
           `Cannot transition invoice from ${invoice.status} to ${targetStatus}`,
-          "INVALID_STATUS_TRANSITION",
+          "INVALID_STATUS_TRANSITION"
         );
       }
 
       // Apply state transition
       invoice.status = targetStatus;
-      
+
       // Handle rejection reason if applicable
       if (targetStatus === InvoiceStatus.REJECTED) {
         if (rejectionReason) {
           invoice.rejectionReason = String(rejectionReason).trim();
         }
       }
-      
+
       logger.debug("Invoice status transitioned successfully", {
         invoiceId: invoice.id,
         fromStatus: invoice.status,
@@ -362,7 +397,7 @@ export class Invoice {
       if (error instanceof AppError) {
         throw error;
       }
-      
+
       logger.error("Failed to transition invoice status", {
         error: error instanceof Error ? error.message : String(error),
         invoiceId: invoice.id,
@@ -370,11 +405,11 @@ export class Invoice {
         toStatus: targetStatus,
         context: "Invoice.transitionTo",
       });
-      
+
       throw new AppError(
         500,
         "Failed to execute invoice status transition",
-        "STATUS_TRANSITION_FAILED",
+        "STATUS_TRANSITION_FAILED"
       );
     }
   }
@@ -382,18 +417,19 @@ export class Invoice {
   /**
    * Evaluates if the invoice is eligible to be published to the marketplace.
    * Optimized with early validation and efficient array building.
-   * 
+   *
    * @returns Object with publishable flag and detailed error messages
    */
   static isPublishable(
     invoice: Partial<Invoice>,
-    options: { referenceDate?: Date; minRunwayHours?: number } = {},
+    options: { referenceDate?: Date; minRunwayHours?: number } = {}
   ): {
     publishable: boolean;
     errors: string[];
   } {
     const errors: string[] = [];
-    const minRunwayHours = options.minRunwayHours ?? VALIDATION_CONSTRAINTS.MIN_RUNWAY_HOURS_DEFAULT;
+    const minRunwayHours =
+      options.minRunwayHours ?? VALIDATION_CONSTRAINTS.MIN_RUNWAY_HOURS_DEFAULT;
     const now = options.referenceDate ?? new Date();
 
     try {
@@ -462,7 +498,7 @@ export class Invoice {
    */
   static isOverdue(invoice: Partial<Invoice>, referenceDate: Date = new Date()): boolean {
     if (!invoice.dueDate) return false;
-    
+
     try {
       const dueTime = new Date(invoice.dueDate).getTime();
       return !isNaN(dueTime) && dueTime < referenceDate.getTime();
@@ -478,14 +514,14 @@ export class Invoice {
    */
   static getFundingRunwayHours(
     invoice: Partial<Invoice>,
-    referenceDate: Date = new Date(),
+    referenceDate: Date = new Date()
   ): number {
     if (!invoice.dueDate) return 0;
-    
+
     try {
       const dueTime = new Date(invoice.dueDate).getTime();
       if (isNaN(dueTime)) return 0;
-      
+
       const diffMs = dueTime - referenceDate.getTime();
       return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60)));
     } catch {
@@ -501,27 +537,23 @@ export class Invoice {
   static create(data: Partial<Invoice>): Invoice {
     try {
       const invoice = new Invoice();
-      
+
       // Assign properties efficiently
       Object.assign(invoice, data);
-      
+
       // Normalize and sanitize
       Invoice.sanitizeAndNormalize(invoice);
-      
+
       return invoice;
     } catch (error) {
       if (error instanceof AppError) throw error;
-      
+
       logger.error("Failed to construct invoice entity", {
         error: error instanceof Error ? error.message : String(error),
         context: "Invoice.create",
       });
-      
-      throw new AppError(
-        500,
-        "Failed to construct invoice entity",
-        "INVOICE_CONSTRUCTION_FAILED",
-      );
+
+      throw new AppError(500, "Failed to construct invoice entity", "INVOICE_CONSTRUCTION_FAILED");
     }
   }
 
@@ -554,11 +586,89 @@ export class Invoice {
         invoiceId: invoice?.id,
         context: "Invoice.toDTO",
       });
-      throw new AppError(
-        500,
-        "Failed to serialize invoice",
-        "INVOICE_SERIALIZATION_FAILED",
-      );
+      throw new AppError(500, "Failed to serialize invoice", "INVOICE_SERIALIZATION_FAILED");
     }
+  }
+
+  isExpired(): boolean {
+    if (!this.dueDate) return false;
+    return new Date(this.dueDate).getTime() < Date.now();
+  }
+
+  isPublishable(): boolean {
+    return (
+      (this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING) &&
+      !this.isExpired() &&
+      Boolean(this.ipfsHash)
+    );
+  }
+
+  canBeCancelled(): boolean {
+    return this.status !== InvoiceStatus.SETTLED && this.status !== InvoiceStatus.CANCELLED;
+  }
+
+  canBeRejected(): boolean {
+    return (
+      this.status !== InvoiceStatus.SETTLED &&
+      this.status !== InvoiceStatus.CANCELLED &&
+      this.status !== InvoiceStatus.REJECTED
+    );
+  }
+
+  isFundable(): boolean {
+    return this.status === InvoiceStatus.PUBLISHED;
+  }
+
+  isSettlable(): boolean {
+    return this.status === InvoiceStatus.FUNDED;
+  }
+
+  @BeforeInsert()
+  @BeforeUpdate()
+  calculateAndFormatAmounts(): void {
+    if (this.customerName) {
+      this.customerName = this.customerName.trim();
+    }
+    if (this.amount !== undefined && this.amount !== null) {
+      const amountDec = new Decimal(this.amount);
+      if (amountDec.isNegative()) {
+        throw new AppError(400, "Invoice amount cannot be negative", "INVALID_INVOICE_AMOUNT");
+      }
+      this.amount = amountDec.toFixed(4);
+    }
+    if (this.discountRate !== undefined && this.discountRate !== null) {
+      const discountDec = new Decimal(this.discountRate);
+      if (discountDec.isNegative() || discountDec.gt(100)) {
+        throw new AppError(400, "Discount rate must be between 0 and 100", "INVALID_DISCOUNT_RATE");
+      }
+      this.discountRate = discountDec.toFixed(2);
+    }
+    if (this.amount && this.discountRate !== undefined) {
+      this.netAmount = Invoice.calculateNetAmount(this.amount, this.discountRate);
+    }
+  }
+
+  validateForPublish(): void {
+    if (!this.ipfsHash || !this.dueDate || this.isExpired()) {
+      throw new AppError(400, "Invoice is not valid for publish", "INVALID_FOR_PUBLISH");
+    }
+  }
+
+  static async batchUpdateStatus(
+    invoices: Invoice[],
+    targetStatus: InvoiceStatus,
+    rejectionReason?: string
+  ): Promise<Invoice[]> {
+    for (const inv of invoices) {
+      Invoice.transitionTo(inv, targetStatus, rejectionReason);
+    }
+    return invoices;
+  }
+
+  static async processBatch(invoices: Invoice[]): Promise<Invoice[]> {
+    for (const inv of invoices) {
+      inv.calculateAndFormatAmounts();
+    }
+    return invoices;
   }
 }

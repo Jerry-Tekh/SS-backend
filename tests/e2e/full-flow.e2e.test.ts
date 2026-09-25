@@ -34,6 +34,9 @@ import { AuthChallenge } from "../../src/models/AuthChallenge.model";
 import { Transaction } from "../../src/models/Transaction.model";
 import { KYCVerification } from "../../src/models/KYCVerification.model";
 import { Notification } from "../../src/models/Notification.model";
+import { InvoiceStatusHistory } from "../../src/models/InvoiceStatusHistory.model";
+import { InvestorReturn } from "../../src/models/InvestorReturn.model";
+import { SettlementRemainder } from "../../src/models/SettlementRemainder.model";
 import { InvoiceStatus, InvestmentStatus, KYCStatus } from "../../src/types/enums";
 import type { AppConfig } from "../../src/config/env";
 import { logger } from "../../src/observability/logger";
@@ -209,52 +212,9 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       admin: {
         ipWhitelist: [],
       },
-    };
+    } as unknown as AppConfig;
 
     // Initialize test database (SQLite in-memory)
-    patchEntityMetadataForSQLite();
-
-    dataSource = new DataSource({
-      type: "sqlite",
-      database: ":memory:",
-      synchronize: true,
-      logging: false,
-      entities: [
-        User,
-        Invoice,
-        Investment,
-        AuthChallenge,
-        Transaction,
-        KYCVerification,
-        Notification,
-      ],
-    });
-
-    await dataSource.initialize();
-
-    // Create services with mocked IPFS
-    const authService = createAuthService(dataSource, config, logger);
-    const invoiceService = createInvoiceService(dataSource, mockIPFSService);
-    const investmentService = createInvestmentService(dataSource);
-    const settlementService = createSettlementService(dataSource);
-    const marketplaceService = createMarketplaceService(dataSource);
-    const notificationService = createNotificationService(dataSource);
-
-    // Create the full app
-    app = createApp({
-      authService,
-      notificationService,
-      invoiceService,
-      investmentService,
-      settlementService,
-      marketplaceService,
-      config,
-      logger,
-      metricsEnabled: false,
-    });
-    // Initialize test database (SQLite in-memory). Wrap the whole bring-up so a
-    // failure in schema sync or service wiring surfaces with a clear cause
-    // instead of every downstream test throwing an opaque "app is undefined".
     try {
       patchEntityMetadataForSQLite();
 
@@ -263,13 +223,24 @@ describe("E2E: Complete Invoice Financing Flow", () => {
         database: ":memory:",
         synchronize: true,
         logging: false,
-        entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification],
+        entities: [
+          User,
+          Invoice,
+          Investment,
+          AuthChallenge,
+          Transaction,
+          KYCVerification,
+          Notification,
+          InvoiceStatusHistory,
+          InvestorReturn,
+          SettlementRemainder,
+        ],
       });
 
       await dataSource.initialize();
 
       // Create services with mocked IPFS
-      const authService = createAuthService(dataSource, config);
+      const authService = createAuthService(dataSource, config, logger);
       const invoiceService = createInvoiceService(dataSource, mockIPFSService);
       const investmentService = createInvestmentService(dataSource);
       const settlementService = createSettlementService(dataSource);
@@ -311,53 +282,6 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       sellerToken = token;
       sellerId = userId;
 
-      expect(challengeRes.body.challenge).toBeDefined();
-      expect(challengeRes.body.challenge.publicKey).toBe(sellerKeypair.publicKey());
-      expect(challengeRes.body.challenge.nonce).toBeDefined();
-      expect(challengeRes.body.challenge.message).toBeDefined();
-
-      const { nonce, message } = challengeRes.body.challenge;
-
-      // Sign the challenge message
-      const signature = sellerKeypair.sign(Buffer.from(message, "utf8")).toString("hex");
-
-      // Verify challenge and get token
-      const verifyRes = await request(app)
-        .post("/api/v1/auth/verify")
-        .send({
-          publicKey: sellerKeypair.publicKey(),
-          nonce,
-          signature,
-        })
-        .expect(200);
-
-      expect(verifyRes.body.token).toBeDefined();
-      expect(verifyRes.body.tokenType).toBe("Bearer");
-      expect(verifyRes.body.user).toBeDefined();
-      expect(verifyRes.body.user.stellarAddress).toBe(sellerKeypair.publicKey());
-
-      sellerToken = verifyRes.body.token;
-      sellerId = verifyRes.body.user.id;
-    });
-
-    it("should authenticate investor via Stellar challenge-response", async () => {
-      const challengeRes = await request(app)
-        .post("/api/v1/auth/challenge")
-        .send({ publicKey: investorKeypair.publicKey() })
-        .expect(201);
-
-      const { nonce, message } = challengeRes.body.challenge;
-
-      const signature = investorKeypair.sign(Buffer.from(message, "utf8")).toString("hex");
-
-      const verifyRes = await request(app)
-        .post("/api/v1/auth/verify")
-        .send({
-          publicKey: investorKeypair.publicKey(),
-          nonce,
-          signature,
-        })
-        .expect(200);
       expect(sellerToken).toEqual(expect.any(String));
       expect(sellerId).toEqual(expect.any(String));
     });

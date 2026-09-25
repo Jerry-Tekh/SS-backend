@@ -555,13 +555,20 @@ export class InvoiceService {
       throw new ServiceError("invoice_already_rejected", "Invoice has already been rejected", 409);
     }
 
-    const updated = await this.applyTransition(invoice, InvoiceStatus.REJECTED, {
-      actor: { role: "admin", id: input.actorId ?? null },
-      trigger: "admin_rejected",
-      context: { reason: rejectionReason },
-    });
+    try {
+      const updated = await this.applyTransition(invoice, InvoiceStatus.REJECTED, {
+        actor: { role: "admin", id: input.actorId ?? null },
+        trigger: "admin_rejected",
+        context: { reason: rejectionReason },
+      });
 
-    return this.toDTO(updated);
+      return this.toDTO(updated);
+    } catch (err) {
+      if (err instanceof ServiceError && err.code === "invalid_status_transition") {
+        throw new ServiceError(err.code, err.message, 409, err.details);
+      }
+      throw err;
+    }
   }
 
   /**
@@ -903,7 +910,7 @@ export class InvoiceService {
       return {
         wallet: truncatedWallet,
         amount: investment.investmentAmount,
-        share_percent: percentage.toString(),
+        share_percent: percentage.toFixed(2),
         committed_at: investment.createdAt,
       };
     });
