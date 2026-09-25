@@ -186,6 +186,7 @@ export function createApp({
 
   if (notificationService) {
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
+    app.use("/notifications", createNotificationRouter(notificationService, authService));
   }
 
   // The emergency pause guard only has something to check when a Soroban
