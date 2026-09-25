@@ -186,6 +186,7 @@ export function createApp({
 
   if (notificationService) {
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
+    app.use("/notifications", createNotificationRouter(notificationService, authService));
   }
 
   // The emergency pause guard only has something to check when a Soroban
@@ -199,17 +200,16 @@ export function createApp({
       : undefined;
 
   if (invoiceService && config) {
-    app.use(
-      "/api/v1/invoices",
-      createInvoiceRouter({
-        invoiceService,
-        config,
-        investmentService,
-        authService,
-        contractGuardService,
-        contractId: pauseGuardContractId,
-      })
-    );
+    const invoiceRouter = createInvoiceRouter({
+      invoiceService,
+      config,
+      investmentService,
+      authService,
+      contractGuardService,
+      contractId: pauseGuardContractId,
+    });
+    app.use("/api/v1/invoices", invoiceRouter);
+    app.use("/invoices", invoiceRouter);
   }
 
   if (investmentService) {

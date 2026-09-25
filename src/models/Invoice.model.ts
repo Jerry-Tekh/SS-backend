@@ -68,13 +68,19 @@ export interface PublicInvoiceDTO {
   status: InvoiceStatus;
   smartContractId: string | null;
   rejectionReason: string | null;
+  title?: string | null;
+  description?: string | null;
+  faceValue?: string | null;
+  fundingTarget?: string | null;
+  yieldBps?: number | null;
+  fundingDeadline?: Date | null;
+  ipfsDocumentUrl?: string | null;
+  sellerWallet?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
 @Entity("invoices")
-@Index("idx_invoices_seller_created_at", ["sellerId", "createdAt", "id"])
-@Index("idx_invoices_seller_status_created_at", ["sellerId", "status", "createdAt", "id"])
 @Index("idx_invoices_seller_status_created", ["sellerId", "status", "createdAt"])
 @Index("idx_invoices_status_due_date", ["status", "dueDate"])
 @Index("idx_invoices_status_created_at", ["status", "createdAt"])
@@ -144,6 +150,31 @@ export class Invoice {
   @Column({ name: "rejection_reason", type: "text", nullable: true })
   rejectionReason!: string | null;
 
+  @Column({ type: "varchar", length: 255, nullable: true })
+  title!: string | null;
+
+  @Column({ type: "text", nullable: true })
+  description!: string | null;
+
+  @Column({ name: "face_value", type: "decimal", precision: 18, scale: 4, nullable: true })
+  faceValue!: string | null;
+
+  @Column({ name: "funding_target", type: "decimal", precision: 18, scale: 4, nullable: true })
+  fundingTarget!: string | null;
+
+  @Column({ name: "yield_bps", type: "int", nullable: true })
+  yieldBps!: number | null;
+
+  @Column({ name: "funding_deadline", type: "timestamptz", nullable: true })
+  fundingDeadline!: Date | null;
+
+  @Column({ name: "ipfs_document_url", type: "varchar", length: 512, nullable: true })
+  ipfsDocumentUrl!: string | null;
+
+  @Column({ name: "seller_wallet", type: "varchar", length: 56, nullable: true })
+  @Index("idx_invoices_seller_wallet")
+  sellerWallet!: string | null;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 
@@ -165,6 +196,10 @@ export class Invoice {
 
   @OneToMany("Transaction", "invoice")
   transactions?: import("./Transaction.model").Transaction[];
+
+  investorReturns?: import("./InvestorReturn.model").InvestorReturn[];
+
+  settlementRemainders?: import("./SettlementRemainder.model").SettlementRemainder[];
 
   /**
    * Calculates the exact net amount using arbitrary-precision decimal arithmetic.
@@ -556,6 +591,151 @@ export class Invoice {
   }
 
   /**
+   * Evaluates if the invoice due date has passed.
+   */
+  isExpired(referenceDate: Date = new Date()): boolean {
+    return this.dueDate ? new Date(this.dueDate).getTime() < referenceDate.getTime() : false;
+  }
+
+  /**
+   * Checks whether the invoice can be published.
+   */
+  isPublishable(): boolean {
+    return (
+      (this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING) &&
+      !this.isExpired() &&
+      Boolean(this.ipfsHash && this.ipfsHash.trim().length > 0)
+    );
+  }
+
+  /**
+   * Checks whether the invoice can be cancelled.
+   */
+  canBeCancelled(): boolean {
+    return (
+      this.status === InvoiceStatus.DRAFT ||
+      this.status === InvoiceStatus.PENDING ||
+      this.status === InvoiceStatus.PUBLISHED ||
+      this.status === InvoiceStatus.FUNDED ||
+      this.status === InvoiceStatus.SETTLED
+    );
+  }
+
+  /**
+   * Checks whether the invoice can be rejected.
+   */
+  canBeRejected(): boolean {
+    return this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING;
+  }
+
+  /**
+   * Checks whether the invoice is in a fundable state.
+   */
+  isFundable(): boolean {
+    return this.status === InvoiceStatus.PUBLISHED && !this.isExpired();
+  }
+
+  /**
+   * Checks whether the invoice is in a settlable state.
+   */
+  isSettlable(): boolean {
+    return this.status === InvoiceStatus.FUNDED;
+  }
+
+  /**
+   * Calculates and formats amounts using Decimal precision and sanitizes customer name.
+   */
+  @BeforeInsert()
+  @BeforeUpdate()
+  calculateAndFormatAmounts(): void {
+    try {
+      if (this.customerName) {
+        this.customerName = String(this.customerName).trim();
+      }
+
+      if (this.amount !== undefined && this.amount !== null) {
+        const amt = new Decimal(this.amount);
+        if (!amt.isFinite() || amt.isNegative()) {
+          throw new AppError(400, "Amount must be positive", "INVALID_AMOUNT");
+        }
+        this.amount = amt.toFixed(4);
+      }
+
+      if (this.discountRate !== undefined && this.discountRate !== null) {
+        const disc = new Decimal(this.discountRate);
+        if (!disc.isFinite() || disc.isNegative() || disc.gt(100)) {
+          throw new AppError(400, "Discount rate must be between 0 and 100", "INVALID_DISCOUNT_RATE");
+        }
+        this.discountRate = disc.toFixed(2);
+      }
+
+      if (this.amount && this.discountRate) {
+        this.netAmount = Invoice.calculateNetAmount(this.amount, this.discountRate);
+      }
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      logger.error("Failed to calculate and format invoice amounts", {
+        error: error instanceof Error ? error.message : String(error),
+        invoiceId: this.id,
+      });
+      throw new AppError(500, "Failed to calculate amounts", "CALCULATION_FAILED");
+    }
+  }
+
+  /**
+   * Validates invoice readiness for publish.
+   */
+  validateForPublish(): void {
+    if (!this.ipfsHash || !String(this.ipfsHash).trim()) {
+      throw new AppError(400, "IPFS document is required to publish invoice", "MISSING_IPFS_HASH");
+    }
+    if (this.isExpired()) {
+      throw new AppError(400, "Cannot publish an overdue invoice", "INVOICE_OVERDUE");
+    }
+  }
+
+  /**
+   * Batch updates status of multiple invoices safely.
+   */
+  static async batchUpdateStatus(
+    invoices: Invoice[],
+    targetStatus: InvoiceStatus,
+    rejectionReason?: string | null,
+  ): Promise<Invoice[]> {
+    try {
+      for (const invoice of invoices) {
+        Invoice.transitionTo(invoice, targetStatus, rejectionReason);
+      }
+      return invoices;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      logger.error("Failed batch updating invoice status", {
+        error: error instanceof Error ? error.message : String(error),
+        targetStatus,
+      });
+      throw new AppError(500, "Failed to update batch status", "BATCH_STATUS_UPDATE_FAILED");
+    }
+  }
+
+  /**
+   * Processes a batch of invoices safely with amount normalization.
+   */
+  static async processBatch(invoices: Invoice[]): Promise<Invoice[]> {
+    try {
+      for (const invoice of invoices) {
+        invoice.calculateAndFormatAmounts();
+      }
+      return invoices;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      logger.error("Failed processing batch invoices", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new AppError(500, "Failed to process batch", "BATCH_PROCESS_FAILED");
+    }
+  }
+
+  /**
    * Serializes entity to a clean DTO payload.
    * Optimized with direct field mapping to avoid unnecessary operations.
    */
@@ -586,87 +766,5 @@ export class Invoice {
       });
       throw new AppError(500, "Failed to serialize invoice", "INVOICE_SERIALIZATION_FAILED");
     }
-  }
-
-  isExpired(): boolean {
-    if (!this.dueDate) return false;
-    return new Date(this.dueDate).getTime() < Date.now();
-  }
-
-  isPublishable(): boolean {
-    return (
-      (this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING) &&
-      !this.isExpired() &&
-      Boolean(this.ipfsHash)
-    );
-  }
-
-  canBeCancelled(): boolean {
-    return this.status !== InvoiceStatus.SETTLED && this.status !== InvoiceStatus.CANCELLED;
-  }
-
-  canBeRejected(): boolean {
-    return (
-      this.status !== InvoiceStatus.SETTLED &&
-      this.status !== InvoiceStatus.CANCELLED &&
-      this.status !== InvoiceStatus.REJECTED
-    );
-  }
-
-  isFundable(): boolean {
-    return this.status === InvoiceStatus.PUBLISHED;
-  }
-
-  isSettlable(): boolean {
-    return this.status === InvoiceStatus.FUNDED;
-  }
-
-  @BeforeInsert()
-  @BeforeUpdate()
-  calculateAndFormatAmounts(): void {
-    if (this.customerName) {
-      this.customerName = this.customerName.trim();
-    }
-    if (this.amount !== undefined && this.amount !== null) {
-      const amountDec = new Decimal(this.amount);
-      if (amountDec.isNegative()) {
-        throw new AppError(400, "Invoice amount cannot be negative", "INVALID_INVOICE_AMOUNT");
-      }
-      this.amount = amountDec.toFixed(4);
-    }
-    if (this.discountRate !== undefined && this.discountRate !== null) {
-      const discountDec = new Decimal(this.discountRate);
-      if (discountDec.isNegative() || discountDec.gt(100)) {
-        throw new AppError(400, "Discount rate must be between 0 and 100", "INVALID_DISCOUNT_RATE");
-      }
-      this.discountRate = discountDec.toFixed(2);
-    }
-    if (this.amount && this.discountRate !== undefined) {
-      this.netAmount = Invoice.calculateNetAmount(this.amount, this.discountRate);
-    }
-  }
-
-  validateForPublish(): void {
-    if (!this.ipfsHash || !this.dueDate || this.isExpired()) {
-      throw new AppError(400, "Invoice is not valid for publish", "INVALID_FOR_PUBLISH");
-    }
-  }
-
-  static async batchUpdateStatus(
-    invoices: Invoice[],
-    targetStatus: InvoiceStatus,
-    rejectionReason?: string
-  ): Promise<Invoice[]> {
-    for (const inv of invoices) {
-      Invoice.transitionTo(inv, targetStatus, rejectionReason);
-    }
-    return invoices;
-  }
-
-  static async processBatch(invoices: Invoice[]): Promise<Invoice[]> {
-    for (const inv of invoices) {
-      inv.calculateAndFormatAmounts();
-    }
-    return invoices;
   }
 }
