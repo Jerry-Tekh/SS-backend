@@ -359,8 +359,12 @@ export class InvoiceService {
         deletedAt: null,
       };
 
-      if (options.status && Object.values(InvoiceStatus).includes(options.status)) {
-        where.status = options.status;
+      const normalizedStatus = options.status
+        ? (String(options.status).trim().toLowerCase() as InvoiceStatus)
+        : undefined;
+
+      if (normalizedStatus && Object.values(InvoiceStatus).includes(normalizedStatus)) {
+        where.status = normalizedStatus;
       }
 
       const skip = Math.max(0, Math.min(options.skip ?? 0, 10000));

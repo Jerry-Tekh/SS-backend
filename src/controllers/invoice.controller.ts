@@ -131,7 +131,10 @@ export function createInvoiceController(
 
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 20;
-        const status = req.query.status;
+        const rawStatus = req.query.status;
+        const status = rawStatus
+          ? (String(rawStatus).trim().toLowerCase() as InvoiceStatus)
+          : undefined;
 
         // Validate pagination
         if (page < 1 || limit < 1 || limit > 100) {
