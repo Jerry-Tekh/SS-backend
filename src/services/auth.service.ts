@@ -431,8 +431,7 @@ export class AuthService {
         });
         throw new HttpError(500, "Failed to fetch current user.");
       }
-
-      if (!user) {
+if (!user) {
         throw new HttpError(
           401,
           "Invalid or expired token.",
@@ -486,12 +485,13 @@ export class AuthService {
    * the same address are coalesced into a single repository round-trip via
    * {@link userUpsertInflight}.
    */
-  private upsertUser(publicKey: string): Promise<User> {
+  private async upsertUser(publicKey: string): Promise<User> {
+    const sanitized = publicKey.trim();
+
     const cached = this.userUpsertInflight.get(publicKey);
     if (cached) return cached;
 
     const promise = (async () => {
-      const sanitized = publicKey.trim();
       try {
         const existingUser = await this.userRepository.findByStellarAddress(sanitized);
         if (existingUser) {
@@ -512,9 +512,7 @@ export class AuthService {
         this.logger?.error("upsertUser failed", { error, publicKey });
         throw error;
       }
-    })().finally(() => {
-      this.userUpsertInflight.delete(publicKey);
-    });
+    })();
 
     this.userUpsertInflight.set(publicKey, promise);
     return promise;
