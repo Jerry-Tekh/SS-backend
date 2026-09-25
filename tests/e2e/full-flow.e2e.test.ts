@@ -212,7 +212,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       admin: {
         ipWhitelist: [],
       },
-    };
+    } as unknown as AppConfig;
 
     // Initialize test database (SQLite in-memory)
     try {

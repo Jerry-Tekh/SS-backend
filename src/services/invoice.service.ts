@@ -910,7 +910,7 @@ export class InvoiceService {
       return {
         wallet: truncatedWallet,
         amount: investment.investmentAmount,
-        share_percent: percentage.toString(),
+        share_percent: percentage.toFixed(2),
         committed_at: investment.createdAt,
       };
     });

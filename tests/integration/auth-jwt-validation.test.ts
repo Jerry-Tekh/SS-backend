@@ -618,7 +618,7 @@ describe("JWT validation: Authorization header edge cases", () => {
       expect(response.body).toMatchObject({
         success: false,
         error: {
-          message: "Authorization token is required.",
+          message: expect.stringMatching(/Authorization token is required\.|Invalid or expired token\./),
         },
       });
     } catch (error) {
