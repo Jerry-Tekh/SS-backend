@@ -110,13 +110,14 @@ const batchPublishSchema = Joi.object({
 });
 
 const getInvoicesQuerySchema = Joi.object({
-  page: Joi.number().integer().min(1).default(1),
+  page: Joi.number().integer().min(1).optional(),
   limit: Joi.number().integer().min(1).max(100).default(20),
   status: Joi.string()
     .trim()
     .lowercase()
     .valid(...Object.values(InvoiceStatus))
     .optional(),
+  cursor: Joi.string().allow("", null).optional(),
 });
 
 const calculateTermsSchema = Joi.object({
@@ -187,10 +188,12 @@ function validateQuery(schema: Joi.Schema) {
     }
 
     // Replace req.query with validated value
-    // In Express, req.query is a getter/setter by default, but we can override it
-    // if we use the default query parser.
-    Object.keys(req.query).forEach((key) => delete req.query[key]);
-    Object.assign(req.query, value);
+    Object.defineProperty(req, "query", {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
     next();
   };
 }
