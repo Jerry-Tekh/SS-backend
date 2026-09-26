@@ -87,18 +87,21 @@ export function extractBearerToken(header: unknown): BearerTokenResult {
   return { ok: true, token };
 }
 
-function missingOrMalformedTokenError(result: Extract<BearerTokenResult, { ok: false }>) {
+function missingOrMalformedTokenError(
+  result: Extract<BearerTokenResult, { ok: false }>,
+  appLogger?: AppLogger
+) {
   if (result.reason === "missing_token") {
     return new HttpError(
       401,
       "Authorization token is required.",
-      buildAuthFailureDetails(undefined, "missing_token")
+      buildAuthFailureDetails(undefined, "missing_token", appLogger)
     );
   }
   return new HttpError(
     401,
     "Invalid or expired token.",
-    buildAuthFailureDetails(result.token, result.reason)
+    buildAuthFailureDetails(result.token, result.reason, appLogger)
   );
 }
 
