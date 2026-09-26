@@ -55,7 +55,7 @@ export function createAdminRouter({
   }
 
   if (adminSettlementService) {
-    router.use("/invoices", createAdminSettlementRouter({ adminSettlementService }));
+    router.use("/", createAdminSettlementRouter({ adminSettlementService }));
   }
 
   return router;
