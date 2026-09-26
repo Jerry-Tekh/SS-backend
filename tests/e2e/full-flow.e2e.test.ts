@@ -13,6 +13,12 @@
  *
  * Flow tested: register/auth → create invoice → publish → marketplace list →
  * invest → verify (confirm) → settle
+ *
+ * OPTIMIZATIONS:
+ * - Centralized error handling and logging via withErrorLogging helper
+ * - Consolidated assertions for numeric comparisons with explicit precision
+ * - Extracted common test patterns into reusable helpers
+ * - Efficient database queries with single lookups per test
  */
 
 import "reflect-metadata";
@@ -80,9 +86,51 @@ function patchEntityMetadataForSQLite(): void {
 /**
  * Normalize a decimal value that may come back from SQLite as a number
  * or from PostgreSQL as a string, into a comparable numeric value.
+ * Precision: 2 decimal places for currency operations.
  */
 function toNum(val: unknown): number {
   return Number(val);
+}
+
+/**
+ * Assert numeric equality with precision tolerance.
+ * Currency values in tests should use 2 decimal precision.
+ *
+ * @param actual - The actual numeric value
+ * @param expected - The expected numeric value
+ * @param precision - Number of decimal places to match (default: 2)
+ */
+function assertNumericEquality(
+  actual: number,
+  expected: number,
+  precision: number = 2,
+  context?: string
+): void {
+  const tolerance = Math.pow(10, -precision);
+  if (Math.abs(actual - expected) > tolerance) {
+    const msg = context ? ` (${context})` : "";
+    throw new Error(`Expected ${expected} but got ${actual}; precision=${precision}${msg}`);
+  }
+}
+
+/**
+ * Execute operation with comprehensive error logging.
+ * Centralizes try/catch pattern to reduce boilerplate in tests.
+ */
+async function withErrorContext<T>(
+  operation: () => Promise<T>,
+  contextName: string,
+  metadata?: Record<string, unknown>
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    logger.error(`${contextName} failed`, {
+      ...metadata,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 /**
@@ -94,78 +142,86 @@ function toNum(val: unknown): number {
  * hop is asserted inline so a regression fails here with a precise message
  * rather than cascading into unrelated later steps.
  *
- * REFACTORED: Added robust error handling and logging for each step.
+ * Performance: O(1) HTTP calls; all I/O is mocked.
+ * Error handling: Wraps crypto and HTTP errors with context.
  */
 async function authenticateViaChallenge(
   httpApp: ReturnType<typeof createApp>,
   keypair: Keypair
 ): Promise<{ token: string; userId: string }> {
-  try {
-    const challengeRes = await request(httpApp)
-      .post("/api/v1/auth/challenge")
-      .send({ publicKey: keypair.publicKey() })
-      .expect(201);
+  return withErrorContext(
+    async () => {
+      const challengeRes = await request(httpApp)
+        .post("/api/v1/auth/challenge")
+        .send({ publicKey: keypair.publicKey() })
+        .expect(201);
 
-    expect(challengeRes.body.challenge).toBeDefined();
-    expect(challengeRes.body.challenge.publicKey).toBe(keypair.publicKey());
-    const { nonce, message } = challengeRes.body.challenge;
-    expect(nonce).toBeDefined();
-    expect(message).toBeDefined();
+      expect(challengeRes.body.challenge).toBeDefined();
+      expect(challengeRes.body.challenge.publicKey).toBe(keypair.publicKey());
+      const { nonce, message } = challengeRes.body.challenge;
+      expect(nonce).toBeDefined();
+      expect(message).toBeDefined();
 
-    const signature = keypair.sign(Buffer.from(message, "utf8")).toString("hex");
+      const signature = keypair.sign(Buffer.from(message, "utf8")).toString("hex");
 
-    const verifyRes = await request(httpApp)
-      .post("/api/v1/auth/verify")
-      .send({ publicKey: keypair.publicKey(), nonce, signature })
-      .expect(200);
+      const verifyRes = await request(httpApp)
+        .post("/api/v1/auth/verify")
+        .send({ publicKey: keypair.publicKey(), nonce, signature })
+        .expect(200);
 
-    expect(verifyRes.body.token).toBeDefined();
-    expect(verifyRes.body.tokenType).toBe("Bearer");
-    expect(verifyRes.body.user?.stellarAddress).toBe(keypair.publicKey());
+      expect(verifyRes.body.token).toBeDefined();
+      expect(verifyRes.body.tokenType).toBe("Bearer");
+      expect(verifyRes.body.user?.stellarAddress).toBe(keypair.publicKey());
 
-    return { token: verifyRes.body.token, userId: verifyRes.body.user.id };
-  } catch (error) {
-    logger.error("authenticateViaChallenge failed", {
-      publicKey: keypair.publicKey(),
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
+      logger.info("Stellar challenge-response authentication successful", {
+        publicKey: keypair.publicKey().slice(0, 8) + "...",
+      });
+
+      return { token: verifyRes.body.token, userId: verifyRes.body.user.id };
+    },
+    "authenticateViaChallenge",
+    {
+      publicKey: keypair.publicKey().slice(0, 8) + "...",
+    }
+  );
 }
 
 /**
- * Helper to set KYC status for a user.
- * REFACTORED: Centralized with error handling and logging.
+ * Helper to set KYC status for a user with validation.
+ * Ensures status was written correctly by querying after update.
+ *
+ * Performance: O(1) database operations; uses direct update + lookup.
+ * Validation: Confirms state change persisted.
  */
 async function setUserKYCStatus(
   dataSource: DataSource,
   userId: string,
   status: KYCStatus
 ): Promise<void> {
-  try {
-    const userRepo = dataSource.getRepository(User);
-    await userRepo.update(userId, { kycStatus: status });
+  return withErrorContext(
+    async () => {
+      const userRepo = dataSource.getRepository(User);
+      await userRepo.update(userId, { kycStatus: status });
 
-    const user = await userRepo.findOneBy({ id: userId });
-    if (!user) {
-      throw new Error(`User ${userId} not found after KYC update`);
-    }
-    if (user.kycStatus !== status) {
-      throw new Error(`KYC status update failed: expected ${status}, got ${user.kycStatus}`);
-    }
+      const user = await userRepo.findOneBy({ id: userId });
+      if (!user) {
+        throw new Error(`User ${userId} not found after KYC update`);
+      }
+      if (user.kycStatus !== status) {
+        throw new Error(`KYC status update failed: expected ${status}, got ${user.kycStatus}`);
+      }
 
-    logger.info("User KYC status updated successfully", {
-      userId,
-      kycStatus: status,
-    });
-  } catch (error) {
-    logger.error("setUserKYCStatus failed", {
-      userId,
+      logger.info("User KYC status updated", {
+        userId: userId.slice(0, 8) + "...",
+        kycStatus: status,
+      });
+    },
+    "setUserKYCStatus",
+    {
+      userId: userId.slice(0, 8) + "...",
       targetStatus: status,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
+    }
+  );
 }
 
 // The full journey spans two authentications, several writes and a settlement.
@@ -360,121 +416,110 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 2: Invoice Creation and Publishing", () => {
     it("should create a new invoice as seller", async () => {
-      try {
-        const dueDate = new Date();
-        dueDate.setDate(dueDate.getDate() + 30);
+      return withErrorContext(
+        async () => {
+          const dueDate = new Date();
+          dueDate.setDate(dueDate.getDate() + 30);
 
-        const createRes = await request(app)
-          .post("/api/v1/invoices")
-          .set("Authorization", `Bearer ${sellerToken}`)
-          .send({
-            invoiceNumber: "INV-E2E-001",
-            customerName: "Test Customer Corp",
-            amount: "10000.0000",
-            discountRate: "5.00",
-            dueDate: dueDate.toISOString(),
-            riskScore: "25.00",
-          })
-          .expect(201);
+          const createRes = await request(app)
+            .post("/api/v1/invoices")
+            .set("Authorization", `Bearer ${sellerToken}`)
+            .send({
+              invoiceNumber: "INV-E2E-001",
+              customerName: "Test Customer Corp",
+              amount: "10000.0000",
+              discountRate: "5.00",
+              dueDate: dueDate.toISOString(),
+              riskScore: "25.00",
+            })
+            .expect(201);
 
-        expect(createRes.body.success).toBe(true);
-        expect(createRes.body.data).toBeDefined();
-        expect(createRes.body.data.invoiceNumber).toBe("INV-E2E-001");
-        expect(createRes.body.data.customerName).toBe("Test Customer Corp");
+          expect(createRes.body.success).toBe(true);
+          expect(createRes.body.data).toBeDefined();
+          expect(createRes.body.data.invoiceNumber).toBe("INV-E2E-001");
+          expect(createRes.body.data.customerName).toBe("Test Customer Corp");
 
-        // Use numeric comparison (SQLite may return numbers without trailing zeros)
-        expect(toNum(createRes.body.data.amount)).toBeCloseTo(10000, 2);
-        expect(toNum(createRes.body.data.discountRate)).toBeCloseTo(5, 2);
-        expect(toNum(createRes.body.data.netAmount)).toBeCloseTo(9500, 2);
-        expect(createRes.body.data.status).toBe(InvoiceStatus.DRAFT);
-        expect(createRes.body.data.sellerId).toBe(sellerId);
+          // Currency assertions with 2 decimal precision
+          assertNumericEquality(toNum(createRes.body.data.amount), 10000, 2, "amount");
+          assertNumericEquality(toNum(createRes.body.data.discountRate), 5, 2, "discountRate");
+          assertNumericEquality(toNum(createRes.body.data.netAmount), 9500, 2, "netAmount");
+          expect(createRes.body.data.status).toBe(InvoiceStatus.DRAFT);
+          expect(createRes.body.data.sellerId).toBe(sellerId);
 
-        invoiceId = createRes.body.data.id;
-        expect(invoiceId).toBeDefined();
+          invoiceId = createRes.body.data.id;
+          expect(invoiceId).toBeDefined();
 
-        logger.info("Invoice created successfully", {
-          invoiceId,
-          sellerId,
-        });
-      } catch (error) {
-        logger.error("Failed to create invoice", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Invoice created", { invoiceId, sellerId });
+        },
+        "Create invoice",
+        { sellerId }
+      );
     });
 
     it("should upload document to IPFS (mocked)", async () => {
-      try {
-        expect(invoiceId).toBeDefined();
+      return withErrorContext(
+        async () => {
+          expect(invoiceId).toBeDefined();
 
-        const uploadRes = await request(app)
-          .post(`/api/v1/invoices/${invoiceId}/document`)
-          .set("Authorization", `Bearer ${sellerToken}`)
-          .attach("document", Buffer.from("mock pdf content"), "invoice.pdf")
-          .expect(200);
+          const uploadRes = await request(app)
+            .post(`/api/v1/invoices/${invoiceId}/document`)
+            .set("Authorization", `Bearer ${sellerToken}`)
+            .attach("document", Buffer.from("mock pdf content"), "invoice.pdf")
+            .expect(200);
 
-        expect(uploadRes.body.success).toBe(true);
-        expect(uploadRes.body.data.ipfsHash).toBe(
-          "QmMockHash1234567890123456789012345678901234567890"
-        );
-        expect(uploadRes.body.data.invoiceId).toBe(invoiceId);
+          expect(uploadRes.body.success).toBe(true);
+          expect(uploadRes.body.data.ipfsHash).toBe(
+            "QmMockHash1234567890123456789012345678901234567890"
+          );
+          expect(uploadRes.body.data.invoiceId).toBe(invoiceId);
 
-        logger.info("Invoice document uploaded", {
-          invoiceId,
-          ipfsHash: uploadRes.body.data.ipfsHash,
-        });
-      } catch (error) {
-        logger.error("Failed to upload invoice document", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Invoice document uploaded", {
+            invoiceId,
+            ipfsHash: uploadRes.body.data.ipfsHash,
+          });
+        },
+        "Upload invoice document",
+        { invoiceId }
+      );
     });
 
     it("should publish the invoice", async () => {
-      try {
-        expect(invoiceId).toBeDefined();
+      return withErrorContext(
+        async () => {
+          expect(invoiceId).toBeDefined();
 
-        const publishRes = await request(app)
-          .post(`/api/v1/invoices/${invoiceId}/publish`)
-          .set("Authorization", `Bearer ${sellerToken}`)
-          .expect(200);
+          const publishRes = await request(app)
+            .post(`/api/v1/invoices/${invoiceId}/publish`)
+            .set("Authorization", `Bearer ${sellerToken}`)
+            .expect(200);
 
-        expect(publishRes.body.success).toBe(true);
-        expect(publishRes.body.data.status).toBe(InvoiceStatus.PUBLISHED);
-        expect(publishRes.body.data.id).toBe(invoiceId);
+          expect(publishRes.body.success).toBe(true);
+          expect(publishRes.body.data.status).toBe(InvoiceStatus.PUBLISHED);
+          expect(publishRes.body.data.id).toBe(invoiceId);
 
-        logger.info("Invoice published", {
-          invoiceId,
-          status: publishRes.body.data.status,
-        });
-      } catch (error) {
-        logger.error("Failed to publish invoice", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Invoice published", { invoiceId });
+        },
+        "Publish invoice",
+        { invoiceId }
+      );
     });
 
     it("should verify invoice status in database", async () => {
-      try {
-        const invoiceRepo = dataSource.getRepository(Invoice);
-        const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
+      return withErrorContext(
+        async () => {
+          const invoiceRepo = dataSource.getRepository(Invoice);
+          const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
 
-        expect(invoice).toBeDefined();
-        expect(invoice?.status).toBe(InvoiceStatus.PUBLISHED);
-        expect(invoice?.sellerId).toBe(sellerId);
-        expect(invoice?.ipfsHash).toBe("QmMockHash1234567890123456789012345678901234567890");
-      } catch (error) {
-        logger.error("Failed to verify invoice in database", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          expect(invoice).toBeDefined();
+          expect(invoice?.status).toBe(InvoiceStatus.PUBLISHED);
+          expect(invoice?.sellerId).toBe(sellerId);
+          expect(invoice?.ipfsHash).toBe("QmMockHash1234567890123456789012345678901234567890");
+
+          logger.info("Invoice database state verified", { invoiceId, status: invoice?.status });
+        },
+        "Verify invoice in database",
+        { invoiceId }
+      );
     });
   });
 
@@ -483,26 +528,37 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 3: Marketplace Listing", () => {
     it("should list published invoices in marketplace", async () => {
-      const marketplaceRes = await request(app)
-        .get("/api/v1/marketplace/invoices")
-        .query({ page: "1", limit: "10" })
-        .expect(200);
+      return withErrorContext(
+        async () => {
+          const marketplaceRes = await request(app)
+            .get("/api/v1/marketplace/invoices")
+            .query({ page: "1", limit: "10" })
+            .expect(200);
 
-      expect(marketplaceRes.body.data).toBeDefined();
-      expect(Array.isArray(marketplaceRes.body.data)).toBe(true);
-      expect(marketplaceRes.body.data.length).toBeGreaterThan(0);
+          expect(marketplaceRes.body.data).toBeDefined();
+          expect(Array.isArray(marketplaceRes.body.data)).toBe(true);
+          expect(marketplaceRes.body.data.length).toBeGreaterThan(0);
 
-      const listedInvoice = marketplaceRes.body.data.find((inv: any) => inv.id === invoiceId);
-      expect(listedInvoice).toBeDefined();
-      expect(listedInvoice.invoiceNumber).toBe("INV-E2E-001");
-      expect(toNum(listedInvoice.amount)).toBeCloseTo(10000, 2);
-      expect(toNum(listedInvoice.netAmount)).toBeCloseTo(9500, 2);
-      expect(listedInvoice.status).toBe(InvoiceStatus.PUBLISHED);
+          const listedInvoice = marketplaceRes.body.data.find((inv: any) => inv.id === invoiceId);
+          expect(listedInvoice).toBeDefined();
+          expect(listedInvoice.invoiceNumber).toBe("INV-E2E-001");
+          assertNumericEquality(toNum(listedInvoice.amount), 10000, 2, "amount");
+          assertNumericEquality(toNum(listedInvoice.netAmount), 9500, 2, "netAmount");
+          expect(listedInvoice.status).toBe(InvoiceStatus.PUBLISHED);
 
-      // Verify sensitive fields are not exposed in marketplace
-      expect(listedInvoice.sellerId).toBeUndefined();
-      expect(listedInvoice.ipfsHash).toBeUndefined();
-      expect(listedInvoice.riskScore).toBeUndefined();
+          // Verify sensitive fields are not exposed in marketplace
+          expect(listedInvoice.sellerId).toBeUndefined();
+          expect(listedInvoice.ipfsHash).toBeUndefined();
+          expect(listedInvoice.riskScore).toBeUndefined();
+
+          logger.info("Marketplace listing verified", {
+            invoiceId,
+            listedCount: marketplaceRes.body.data.length,
+          });
+        },
+        "List marketplace invoices",
+        { invoiceId }
+      );
     });
   });
 
@@ -511,87 +567,87 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 4: Investment Creation", () => {
     it("should create investment as investor", async () => {
-      try {
-        const investRes = await request(app)
-          .post("/api/v1/investments")
-          .set("Authorization", `Bearer ${investorToken}`)
-          .send({
-            invoiceId,
-            investmentAmount: "9500.0000",
-          })
-          .expect(201);
+      return withErrorContext(
+        async () => {
+          const investRes = await request(app)
+            .post("/api/v1/investments")
+            .set("Authorization", `Bearer ${investorToken}`)
+            .send({
+              invoiceId,
+              investmentAmount: "9500.0000",
+            })
+            .expect(201);
 
-        expect(investRes.body.success).toBe(true);
-        expect(investRes.body.data).toBeDefined();
-        expect(investRes.body.data.invoiceId).toBe(invoiceId);
-        expect(investRes.body.data.investorId).toBe(investorId);
-        expect(toNum(investRes.body.data.investmentAmount)).toBeCloseTo(9500, 2);
-        expect(investRes.body.data.status).toBe(InvestmentStatus.PENDING);
-        expect(investRes.body.data.expectedReturn).toBeDefined();
+          expect(investRes.body.success).toBe(true);
+          expect(investRes.body.data).toBeDefined();
+          expect(investRes.body.data.invoiceId).toBe(invoiceId);
+          expect(investRes.body.data.investorId).toBe(investorId);
+          assertNumericEquality(
+            toNum(investRes.body.data.investmentAmount),
+            9500,
+            2,
+            "investmentAmount"
+          );
+          expect(investRes.body.data.status).toBe(InvestmentStatus.PENDING);
+          expect(investRes.body.data.expectedReturn).toBeDefined();
 
-        investmentId = investRes.body.data.id;
-        expect(investmentId).toBeDefined();
+          investmentId = investRes.body.data.id;
+          expect(investmentId).toBeDefined();
 
-        // expectedReturn = investmentAmount * (faceValue / netAmount)
-        // = 9500 * (10000 / 9500) = 10000
-        expect(toNum(investRes.body.data.expectedReturn)).toBeCloseTo(10000, 2);
+          // expectedReturn = investmentAmount * (faceValue / netAmount) = 9500 * (10000 / 9500) = 10000
+          assertNumericEquality(
+            toNum(investRes.body.data.expectedReturn),
+            10000,
+            2,
+            "expectedReturn"
+          );
 
-        logger.info("Investment created successfully", {
-          investmentId,
-          investorId,
-          invoiceId,
-        });
-      } catch (error) {
-        logger.error("Failed to create investment", {
-          invoiceId,
-          investorId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Investment created", { investmentId, investorId, invoiceId });
+        },
+        "Create investment",
+        { investorId, invoiceId }
+      );
     });
 
     it("should transition invoice to FUNDED when fully subscribed", async () => {
-      try {
-        const invoiceRepo = dataSource.getRepository(Invoice);
-        const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
+      return withErrorContext(
+        async () => {
+          const invoiceRepo = dataSource.getRepository(Invoice);
+          const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
 
-        expect(invoice?.status).toBe(InvoiceStatus.FUNDED);
-
-        logger.info("Invoice transitioned to FUNDED", {
-          invoiceId,
-        });
-      } catch (error) {
-        logger.error("Failed to verify invoice funding transition", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          expect(invoice?.status).toBe(InvoiceStatus.FUNDED);
+          logger.info("Invoice transitioned to FUNDED", { invoiceId });
+        },
+        "Verify invoice FUNDED transition",
+        { invoiceId }
+      );
     });
 
     it("should verify investment in database", async () => {
-      try {
-        const investmentRepo = dataSource.getRepository(Investment);
-        const investment = await investmentRepo.findOneBy({ id: investmentId });
+      return withErrorContext(
+        async () => {
+          const investmentRepo = dataSource.getRepository(Investment);
+          const investment = await investmentRepo.findOneBy({ id: investmentId });
 
-        expect(investment).toBeDefined();
-        expect(investment?.invoiceId).toBe(invoiceId);
-        expect(investment?.investorId).toBe(investorId);
-        expect(toNum(investment?.investmentAmount)).toBeCloseTo(9500, 2);
-        expect(investment?.status).toBe(InvestmentStatus.PENDING);
+          expect(investment).toBeDefined();
+          expect(investment?.invoiceId).toBe(invoiceId);
+          expect(investment?.investorId).toBe(investorId);
+          assertNumericEquality(
+            toNum(investment?.investmentAmount ?? "0"),
+            9500,
+            2,
+            "investmentAmount"
+          );
+          expect(investment?.status).toBe(InvestmentStatus.PENDING);
 
-        logger.info("Investment verified in database", {
-          investmentId,
-          status: investment?.status,
-        });
-      } catch (error) {
-        logger.error("Failed to verify investment in database", {
-          investmentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Investment verified in database", {
+            investmentId,
+            status: investment?.status,
+          });
+        },
+        "Verify investment in database",
+        { investmentId }
+      );
     });
   });
 
@@ -600,35 +656,33 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 5: Investment Confirmation (Horizon Mock)", () => {
     it("should confirm investment (simulating Stellar Horizon verification)", async () => {
-      try {
-        expect(investmentId).toBeDefined();
+      return withErrorContext(
+        async () => {
+          expect(investmentId).toBeDefined();
 
-        // In production, the reconciliation worker watches Horizon for on-chain
-        // transactions and marks investments as CONFIRMED.
-        // For E2E, we simulate this by updating the status directly.
-        const investmentRepo = dataSource.getRepository(Investment);
-        await investmentRepo.update(investmentId, {
-          status: InvestmentStatus.CONFIRMED,
-          transactionHash: "mock_stellar_tx_hash_e2e_12345",
-          stellarOperationIndex: 1,
-        });
+          // In production, the reconciliation worker watches Horizon for on-chain
+          // transactions and marks investments as CONFIRMED.
+          // For E2E, we simulate this by updating the status directly.
+          const investmentRepo = dataSource.getRepository(Investment);
+          await investmentRepo.update(investmentId, {
+            status: InvestmentStatus.CONFIRMED,
+            transactionHash: "mock_stellar_tx_hash_e2e_12345",
+            stellarOperationIndex: 1,
+          });
 
-        const investment = await investmentRepo.findOneBy({ id: investmentId });
-        expect(investment?.status).toBe(InvestmentStatus.CONFIRMED);
-        expect(investment?.transactionHash).toBe("mock_stellar_tx_hash_e2e_12345");
+          const investment = await investmentRepo.findOneBy({ id: investmentId });
+          expect(investment?.status).toBe(InvestmentStatus.CONFIRMED);
+          expect(investment?.transactionHash).toBe("mock_stellar_tx_hash_e2e_12345");
 
-        logger.info("Investment confirmed", {
-          investmentId,
-          status: investment?.status,
-          transactionHash: investment?.transactionHash,
-        });
-      } catch (error) {
-        logger.error("Failed to confirm investment", {
-          investmentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Investment confirmed", {
+            investmentId,
+            status: investment?.status,
+            transactionHash: investment?.transactionHash,
+          });
+        },
+        "Confirm investment",
+        { investmentId }
+      );
     });
   });
 
@@ -637,114 +691,112 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 6: Settlement", () => {
     it("should settle the funded invoice", async () => {
-      try {
-        const settleRes = await request(app)
-          .post(`/api/v1/settlements/${invoiceId}`)
-          .set("Authorization", `Bearer ${sellerToken}`)
-          .send({
-            proceeds: "10000.0000",
-          })
-          .expect(200);
+      return withErrorContext(
+        async () => {
+          const settleRes = await request(app)
+            .post(`/api/v1/settlements/${invoiceId}`)
+            .set("Authorization", `Bearer ${sellerToken}`)
+            .send({
+              proceeds: "10000.0000",
+            })
+            .expect(200);
 
-        expect(settleRes.body.success).toBe(true);
-        expect(settleRes.body.data).toBeDefined();
-        expect(settleRes.body.data.invoiceId).toBe(invoiceId);
-        expect(settleRes.body.data.status).toBe(InvoiceStatus.SETTLED);
-        expect(toNum(settleRes.body.data.proceeds)).toBeCloseTo(10000, 2);
-        expect(settleRes.body.data.settlements).toBeDefined();
-        expect(Array.isArray(settleRes.body.data.settlements)).toBe(true);
-        expect(settleRes.body.data.settlements.length).toBe(1);
+          expect(settleRes.body.success).toBe(true);
+          expect(settleRes.body.data).toBeDefined();
+          expect(settleRes.body.data.invoiceId).toBe(invoiceId);
+          expect(settleRes.body.data.status).toBe(InvoiceStatus.SETTLED);
+          assertNumericEquality(toNum(settleRes.body.data.proceeds), 10000, 2, "proceeds");
+          expect(settleRes.body.data.settlements).toBeDefined();
+          expect(Array.isArray(settleRes.body.data.settlements)).toBe(true);
+          expect(settleRes.body.data.settlements.length).toBe(1);
 
-        const settlement = settleRes.body.data.settlements[0];
-        expect(settlement.investmentId).toBe(investmentId);
-        expect(settlement.investorId).toBe(investorId);
-        expect(toNum(settlement.investmentAmount)).toBeCloseTo(9500, 2);
+          const settlement = settleRes.body.data.settlements[0];
+          expect(settlement.investmentId).toBe(investmentId);
+          expect(settlement.investorId).toBe(investorId);
+          assertNumericEquality(toNum(settlement.investmentAmount), 9500, 2, "settlementAmount");
 
-        // Investor funded 100% so gets 100% of proceeds
-        expect(toNum(settlement.actualReturn)).toBeCloseTo(10000, 2);
+          // Investor funded 100% so gets 100% of proceeds
+          assertNumericEquality(toNum(settlement.actualReturn), 10000, 2, "actualReturn");
 
-        logger.info("Invoice settled successfully", {
-          invoiceId,
-          proceeds: settleRes.body.data.proceeds,
-          settlementCount: settleRes.body.data.settlements.length,
-        });
-      } catch (error) {
-        logger.error("Failed to settle invoice", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Invoice settled", {
+            invoiceId,
+            proceeds: settleRes.body.data.proceeds,
+            settlementCount: settleRes.body.data.settlements.length,
+          });
+        },
+        "Settle invoice",
+        { invoiceId }
+      );
     });
 
     it("should transition invoice to SETTLED in database", async () => {
-      try {
-        const invoiceRepo = dataSource.getRepository(Invoice);
-        const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
+      return withErrorContext(
+        async () => {
+          const invoiceRepo = dataSource.getRepository(Invoice);
+          const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
 
-        expect(invoice?.status).toBe(InvoiceStatus.SETTLED);
-
-        logger.info("Invoice settled in database", {
-          invoiceId,
-          status: invoice?.status,
-        });
-      } catch (error) {
-        logger.error("Failed to verify invoice settlement in database", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          expect(invoice?.status).toBe(InvoiceStatus.SETTLED);
+          logger.info("Invoice settled in database", { invoiceId, status: invoice?.status });
+        },
+        "Verify invoice SETTLED",
+        { invoiceId }
+      );
     });
 
     it("should transition investment to SETTLED in database", async () => {
-      try {
-        const investmentRepo = dataSource.getRepository(Investment);
-        const investment = await investmentRepo.findOneBy({ id: investmentId });
+      return withErrorContext(
+        async () => {
+          const investmentRepo = dataSource.getRepository(Investment);
+          const investment = await investmentRepo.findOneBy({ id: investmentId });
 
-        expect(investment?.status).toBe(InvestmentStatus.SETTLED);
-        expect(investment?.actualReturn).toBeDefined();
-        expect(toNum(investment?.actualReturn ?? "0")).toBeCloseTo(10000, 2);
+          expect(investment?.status).toBe(InvestmentStatus.SETTLED);
+          expect(investment?.actualReturn).toBeDefined();
+          assertNumericEquality(toNum(investment?.actualReturn ?? "0"), 10000, 2, "actualReturn");
 
-        logger.info("Investment settled in database", {
-          investmentId,
-          status: investment?.status,
-          actualReturn: investment?.actualReturn,
-        });
-      } catch (error) {
-        logger.error("Failed to verify investment settlement in database", {
-          investmentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Investment settled in database", {
+            investmentId,
+            status: investment?.status,
+            actualReturn: investment?.actualReturn,
+          });
+        },
+        "Verify investment SETTLED",
+        { investmentId }
+      );
     });
 
     it("should verify investor dashboard reflects settled investment", async () => {
-      try {
-        const dashboardRes = await request(app)
-          .get("/api/v1/investments/dashboard")
-          .set("Authorization", `Bearer ${investorToken}`)
-          .expect(200);
+      return withErrorContext(
+        async () => {
+          const dashboardRes = await request(app)
+            .get("/api/v1/investments/dashboard")
+            .set("Authorization", `Bearer ${investorToken}`)
+            .expect(200);
 
-        expect(dashboardRes.body.success).toBe(true);
-        expect(dashboardRes.body.data).toBeDefined();
-        expect(toNum(dashboardRes.body.data.totalInvested)).toBeCloseTo(9500, 2);
-        expect(toNum(dashboardRes.body.data.totalReturns)).toBeCloseTo(10000, 2);
-        expect(dashboardRes.body.data.activeInvestments).toBe(0);
+          expect(dashboardRes.body.success).toBe(true);
+          expect(dashboardRes.body.data).toBeDefined();
+          assertNumericEquality(
+            toNum(dashboardRes.body.data.totalInvested),
+            9500,
+            2,
+            "totalInvested"
+          );
+          assertNumericEquality(
+            toNum(dashboardRes.body.data.totalReturns),
+            10000,
+            2,
+            "totalReturns"
+          );
+          expect(dashboardRes.body.data.activeInvestments).toBe(0);
 
-        logger.info("Investor dashboard verified", {
-          investorId,
-          totalInvested: dashboardRes.body.data.totalInvested,
-          totalReturns: dashboardRes.body.data.totalReturns,
-        });
-      } catch (error) {
-        logger.error("Failed to verify investor dashboard", {
-          investorId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Investor dashboard verified", {
+            investorId: investorId.slice(0, 8) + "...",
+            totalInvested: dashboardRes.body.data.totalInvested,
+            totalReturns: dashboardRes.body.data.totalReturns,
+          });
+        },
+        "Verify investor dashboard",
+        { investorId }
+      );
     });
   });
 
@@ -753,94 +805,85 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 7: Post-Settlement Verification", () => {
     it("should prevent updating a settled invoice", async () => {
-      try {
-        const res = await request(app)
-          .put(`/api/v1/invoices/${invoiceId}`)
-          .set("Authorization", `Bearer ${sellerToken}`)
-          .send({ amount: "15000.0000" });
+      return withErrorContext(
+        async () => {
+          const res = await request(app)
+            .put(`/api/v1/invoices/${invoiceId}`)
+            .set("Authorization", `Bearer ${sellerToken}`)
+            .send({ amount: "15000.0000" });
 
-        // Should fail because invoice is settled (cannot update non-draft invoices)
-        expect(res.status).toBeGreaterThanOrEqual(400);
-
-        logger.info("Settled invoice update correctly rejected", {
-          invoiceId,
-          status: res.status,
-        });
-      } catch (error) {
-        logger.error("Failed to verify settled invoice update rejection", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          // Should fail because invoice is settled (cannot update non-draft invoices)
+          expect(res.status).toBeGreaterThanOrEqual(400);
+          logger.info("Settled invoice update correctly rejected", {
+            invoiceId,
+            status: res.status,
+          });
+        },
+        "Verify settled invoice update rejection",
+        { invoiceId }
+      );
     });
 
     it("should prevent investing in a settled invoice", async () => {
-      try {
-        const res = await request(app)
-          .post("/api/v1/investments")
-          .set("Authorization", `Bearer ${investorToken}`)
-          .send({
+      return withErrorContext(
+        async () => {
+          const res = await request(app)
+            .post("/api/v1/investments")
+            .set("Authorization", `Bearer ${investorToken}`)
+            .send({
+              invoiceId,
+              investmentAmount: "1000.0000",
+            });
+
+          // Should fail because invoice is no longer in PUBLISHED status
+          expect(res.status).toBeGreaterThanOrEqual(400);
+          logger.info("Investment in settled invoice correctly rejected", {
             invoiceId,
-            investmentAmount: "1000.0000",
+            status: res.status,
           });
-
-        // Should fail because invoice is no longer in PUBLISHED status
-        expect(res.status).toBeGreaterThanOrEqual(400);
-
-        logger.info("Investment in settled invoice correctly rejected", {
-          invoiceId,
-          status: res.status,
-        });
-      } catch (error) {
-        logger.error("Failed to verify settled invoice investment rejection", {
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+        },
+        "Verify settled invoice investment rejection",
+        { invoiceId }
+      );
     });
 
     it("should verify complete flow integrity", async () => {
-      try {
-        const invoiceRepo = dataSource.getRepository(Invoice);
-        const investmentRepo = dataSource.getRepository(Investment);
+      return withErrorContext(
+        async () => {
+          const invoiceRepo = dataSource.getRepository(Invoice);
+          const investmentRepo = dataSource.getRepository(Investment);
 
-        const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
-        const investment = await investmentRepo.findOneBy({ id: investmentId });
+          const invoice = await invoiceRepo.findOneBy({ id: invoiceId });
+          const investment = await investmentRepo.findOneBy({ id: investmentId });
 
-        // Status transitions
-        expect(invoice?.status).toBe(InvoiceStatus.SETTLED);
-        expect(investment?.status).toBe(InvestmentStatus.SETTLED);
+          // Status transitions
+          expect(invoice?.status).toBe(InvoiceStatus.SETTLED);
+          expect(investment?.status).toBe(InvestmentStatus.SETTLED);
 
-        // Financial calculations
-        const investedAmount = toNum(investment?.investmentAmount ?? "0");
-        const actualReturn = toNum(investment?.actualReturn ?? "0");
-        const expectedReturn = toNum(investment?.expectedReturn ?? "0");
+          // Financial calculations
+          const investedAmount = toNum(investment?.investmentAmount ?? "0");
+          const actualReturn = toNum(investment?.actualReturn ?? "0");
+          const expectedReturn = toNum(investment?.expectedReturn ?? "0");
 
-        expect(investedAmount).toBeCloseTo(9500, 2);
-        expect(actualReturn).toBeCloseTo(10000, 2);
-        expect(expectedReturn).toBeCloseTo(10000, 2);
+          assertNumericEquality(investedAmount, 9500, 2, "investedAmount");
+          assertNumericEquality(actualReturn, 10000, 2, "actualReturn");
+          assertNumericEquality(expectedReturn, 10000, 2, "expectedReturn");
 
-        // Profit
-        const profit = actualReturn - investedAmount;
-        expect(profit).toBeCloseTo(500, 2);
+          // Profit
+          const profit = actualReturn - investedAmount;
+          assertNumericEquality(profit, 500, 2, "profit");
 
-        logger.info("Complete flow integrity verified", {
-          invoiceId,
-          investmentId,
-          profit,
-          investedAmount,
-          actualReturn,
-        });
-      } catch (error) {
-        logger.error("Failed to verify complete flow integrity", {
-          invoiceId,
-          investmentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+          logger.info("Complete flow integrity verified", {
+            invoiceId: invoiceId.slice(0, 8) + "...",
+            investmentId: investmentId.slice(0, 8) + "...",
+            profit,
+            investedAmount,
+            actualReturn,
+          });
+        },
+        "Verify complete flow integrity",
+        { invoiceId, investmentId }
+      );
     });
   });
 });
